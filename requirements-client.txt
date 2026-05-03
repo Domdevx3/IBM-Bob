@@ -7,4 +7,7 @@ flet==0.24.1
 # Pillow para manejo de imágenes
 Pillow==10.4.0
 
+# IBM watsonx.ai SDK
+ibm-watsonx-ai>=1.0.0
+
 # Sin otras dependencias externas - network_manager usa solo bibliotecas estándar

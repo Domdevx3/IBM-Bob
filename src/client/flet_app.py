@@ -384,6 +384,172 @@ class RoomButton(ft.UserControl):
         )
 
 
+class ScaffoldCard(ft.UserControl):
+    """
+    AI Project Scaffolder Card - Material Design 3
+    Displays generated project structure with copy/generate functionality
+    """
+    
+    def __init__(self, project_data: Dict, on_generate: Optional[Callable] = None,
+                 on_copy: Optional[Callable] = None):
+        super().__init__()
+        self.project_data = project_data
+        self.on_generate = on_generate
+        self.on_copy = on_copy
+        
+    def build(self):
+        # Extract project info
+        project_name = self.project_data.get("project_name", "Proyecto")
+        description = self.project_data.get("description", "")
+        structure = self.project_data.get("structure", {})
+        files = self.project_data.get("files", {})
+        
+        # Build folder tree visualization
+        tree_items = []
+        for folder, contents in structure.items():
+            tree_items.append(
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.icons.FOLDER, size=16, color="#FFA726"),
+                            ft.Text(folder, size=13, color=COLOR_TEXTO_CHAT, weight=ft.FontWeight.BOLD),
+                        ],
+                        spacing=8,
+                    ),
+                    padding=ft.padding.only(left=10, top=5, bottom=5),
+                )
+            )
+            if isinstance(contents, list):
+                for item in contents:
+                    tree_items.append(
+                        ft.Container(
+                            content=ft.Row(
+                                controls=[
+                                    ft.Icon(ft.icons.INSERT_DRIVE_FILE, size=14, color="#66BB6A"),
+                                    ft.Text(item, size=12, color="#CCCCCC"),
+                                ],
+                                spacing=8,
+                            ),
+                            padding=ft.padding.only(left=30, top=2, bottom=2),
+                        )
+                    )
+        
+        # Action buttons
+        action_buttons = ft.Row(
+            controls=[
+                ft.ElevatedButton(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.icons.CONTENT_COPY, size=18),
+                            ft.Text("Copiar Estructura", size=13),
+                        ],
+                        spacing=8,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                    bgcolor=COLOR_ENTRADA_OSCURA,
+                    color=COLOR_TEXTO_CHAT,
+                    on_click=lambda e: self.on_copy(self.project_data) if self.on_copy else None,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                ),
+                ft.ElevatedButton(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.icons.CREATE_NEW_FOLDER, size=18),
+                            ft.Text("Generar Archivos", size=13),
+                        ],
+                        spacing=8,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                    bgcolor=COLOR_BOTON,
+                    color="white",
+                    on_click=lambda e: self.on_generate(self.project_data) if self.on_generate else None,
+                    style=ft.ButtonStyle(
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                ),
+            ],
+            spacing=12,
+            alignment=ft.MainAxisAlignment.END,
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    # Header
+                    ft.Container(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.icons.ARCHITECTURE, size=24, color=COLOR_BOTON),
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            project_name,
+                                            size=16,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=COLOR_TEXTO_CHAT,
+                                        ),
+                                        ft.Text(
+                                            description,
+                                            size=12,
+                                            color="#999999",
+                                            italic=True,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=12,
+                        ),
+                        padding=ft.padding.all(16),
+                        bgcolor="#2a2a2a",
+                        border_radius=ft.border_radius.only(top_left=12, top_right=12),
+                    ),
+                    # Structure tree
+                    ft.Container(
+                        content=ft.Column(
+                            controls=[
+                                ft.Text(
+                                    "📁 Estructura del Proyecto",
+                                    size=13,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=COLOR_BOTON,
+                                ),
+                                ft.Container(
+                                    content=ft.Column(
+                                        controls=tree_items,
+                                        spacing=0,
+                                        scroll=ft.ScrollMode.AUTO,
+                                    ),
+                                    height=200,
+                                    bgcolor="#1a1a1a",
+                                    border_radius=8,
+                                    padding=ft.padding.all(10),
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        padding=ft.padding.all(16),
+                    ),
+                    # Actions
+                    ft.Container(
+                        content=action_buttons,
+                        padding=ft.padding.all(16),
+                        bgcolor="#2a2a2a",
+                        border_radius=ft.border_radius.only(bottom_left=12, bottom_right=12),
+                    ),
+                ],
+                spacing=0,
+            ),
+            border=ft.border.all(2, COLOR_BOTON),
+            border_radius=12,
+            bgcolor=COLOR_FONDO_CHAT,
+            animate=ft.animation.Animation(300, ft.AnimationCurve.EASE_OUT),
+        )
+
+
 class SearchBar(ft.UserControl):
     """Search bar component for filtering messages"""
     
@@ -1583,6 +1749,8 @@ Comandos disponibles:
 /clear - Limpiar mensajes
 /status - Ver estado de conexión
 /rooms - Listar salas disponibles
+/scaffold [descripción] - Generar estructura de proyecto con IA
+Ejemplo: /scaffold API REST con Node.js y Express
             """
             self.message_list.controls.append(
                 self._create_system_message(help_text.strip())
@@ -1600,6 +1768,15 @@ Comandos disponibles:
             self.message_list.controls.append(
                 self._create_system_message(f"Salas: {rooms}")
             )
+        elif command.startswith("/scaffold "):
+            # Extract project description
+            description = command[10:].strip()
+            if not description:
+                self._show_notification("Uso: /scaffold [descripción del proyecto]", "warning")
+                return
+            
+            # Handle scaffold command asynchronously
+            self.page.run_task(self._handle_scaffold_command, description)
         else:
             self._show_notification(f"Comando desconocido: {command}", "warning")
             
@@ -2149,24 +2326,367 @@ Conversación:
 
 Resumen:"""
             
-            model = ModelInference(
-                model_id="meta-llama/llama-3-70b-instruct",
-                api_client=client,
-                project_id=self.config.watsonx_project_id,
-                params={
-                    GenParams.MAX_NEW_TOKENS: 500,
-                    GenParams.TEMPERATURE: 0.7,
-                    GenParams.TOP_P: 0.9
-                }
-            )
+            # Create model with proper error handling
+            try:
+                model = ModelInference(
+                    model_id="ibm/granite-8b-code-instruct",
+                    api_client=client,
+                    project_id=self.config.watsonx_project_id,
+                    params={
+                        GenParams.MAX_NEW_TOKENS: 500,
+                        GenParams.TEMPERATURE: 0.7,
+                        GenParams.TOP_P: 0.9
+                    }
+                )
+            except Exception as model_error:
+                raise Exception(f"Error al crear modelo: {str(model_error)}")
             
-            response = model.generate_text(prompt=prompt)
+            # Generate text with proper error handling
+            try:
+                response = model.generate_text(prompt=prompt)
+            except Exception as gen_error:
+                raise Exception(f"Error al generar texto: {str(gen_error)}")
             
+            # Extract response text with validation
+            response_text = None
             if isinstance(response, dict):
-                return response.get("results", [{}])[0].get("generated_text", str(response))
-            return str(response)
+                # Try to extract from results array
+                results = response.get("results", [])
+                if results and len(results) > 0:
+                    response_text = results[0].get("generated_text", "")
+                
+                # Fallback: try direct generated_text key
+                if not response_text:
+                    response_text = response.get("generated_text", "")
+                
+                # Last resort: stringify the whole response
+                if not response_text:
+                    response_text = str(response)
+            else:
+                response_text = str(response)
+            
+            # Validate we got something
+            if not response_text or response_text.strip() == "":
+                raise Exception("La respuesta de watsonx.ai está vacía. Verifica tu configuración.")
+            
+            return response_text.strip()
             
         except Exception as e:
+            # Return detailed error message instead of silently failing
+            error_msg = f"Error en watsonx.ai: {str(e)}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+    
+    async def _handle_scaffold_command(self, description: str):
+        """Handle /scaffold command - Generate project structure with AI"""
+        if not self.config.is_watsonx_configured():
+            self._show_notification(
+                "⚠️ watsonx.ai no está configurado. Configura WATSONX_API_KEY y WATSONX_PROJECT_ID",
+                "warning"
+            )
+            return
+        
+        # Show loading indicator
+        loading = LoadingIndicator(f"🏗️ Generando estructura de proyecto con IBM watsonx.ai...")
+        self.message_list.controls.append(loading)
+        self.page.update()
+        
+        try:
+            # Generate project structure
+            project_data = await self._generate_project_scaffold(description)
+            
+            # Remove loading indicator
+            if loading in self.message_list.controls:
+                self.message_list.controls.remove(loading)
+            
+            # Add scaffold card to chat
+            scaffold_card = ScaffoldCard(
+                project_data=project_data,
+                on_generate=self._on_generate_files,
+                on_copy=self._on_copy_structure
+            )
+            self.message_list.controls.append(scaffold_card)
+            
+            self._show_notification("✅ Estructura de proyecto generada", "success")
+            
+        except Exception as e:
+            # Remove loading indicator
+            if loading in self.message_list.controls:
+                self.message_list.controls.remove(loading)
+            
+            error_message = f"❌ Error al generar estructura: {str(e)}"
+            self.message_list.controls.append(
+                self._create_system_message(error_message)
+            )
+            self._show_notification("Error al generar proyecto", "error")
+        
+        self.page.update()
+    
+    async def _generate_project_scaffold(self, description: str) -> Dict:
+        """Generate project structure using IBM watsonx.ai as Software Architect"""
+        try:
+            # Lazy load WatsonX imports
+            _ensure_watsonx_imports()
+            
+            client = self._get_watsonx_client()
+            
+            # Engineered prompt for structured JSON output
+            prompt = f"""You are an expert Software Architect. Generate a complete project structure for the following description.
+
+Project Description: {description}
+
+You MUST respond with ONLY a valid JSON object (no markdown, no explanations) with this exact structure:
+{{
+  "project_name": "project-name-kebab-case",
+  "description": "Brief project description",
+  "structure": {{
+    "src/": ["main.py", "config.py", "utils.py"],
+    "tests/": ["test_main.py"],
+    "docs/": ["README.md", "API.md"],
+    "config/": [".env.example", "settings.json"]
+  }},
+  "files": {{
+    "src/main.py": "# Main application entry point\\nimport config\\n\\ndef main():\\n    print('Hello World')\\n\\nif __name__ == '__main__':\\n    main()",
+    "README.md": "# Project Name\\n\\n## Description\\nProject description here\\n\\n## Installation\\n```bash\\npip install -r requirements.txt\\n```",
+    ".env.example": "API_KEY=your_api_key_here\\nDEBUG=true"
+  }},
+  "tech_stack": ["Python 3.11", "FastAPI", "PostgreSQL"],
+  "commands": {{
+    "install": "pip install -r requirements.txt",
+    "run": "python src/main.py",
+    "test": "pytest tests/"
+  }}
+}}
+
+Generate the JSON structure now:"""
+            
+            # Use strict parameters for structured output
+            # Using meta-llama model which is more reliable for code generation
+            try:
+                model = ModelInference(
+                    model_id="meta-llama/llama-3-3-70b-instruct",
+                    api_client=client,
+                    project_id=self.config.watsonx_project_id,
+                    params={
+                        GenParams.MAX_NEW_TOKENS: 2000,
+                        GenParams.TEMPERATURE: 0.3,  # Low temperature for consistent structure
+                        GenParams.TOP_P: 0.85,
+                        GenParams.STOP_SEQUENCES: ["\n\n\n"],  # Stop at code blocks or excessive newlines
+                    }
+                )
+                print(f"✅ Modelo creado: meta-llama/llama-3-3-70b-instruct")
+            except Exception as model_error:
+                error_msg = f"Error al crear modelo watsonx.ai: {str(model_error)}"
+                print(f"❌ {error_msg}")
+                raise Exception(error_msg)
+            
+            # Generate text with proper error handling
+            try:
+                print(f"🔄 Generando respuesta con watsonx.ai...")
+                response = model.generate_text(prompt=prompt)
+                print(f"✅ Respuesta recibida. Tipo: {type(response)}")
+                
+                # Debug: print response structure
+                if isinstance(response, dict):
+                    print(f"📊 Claves en respuesta: {list(response.keys())}")
+                    if "results" in response:
+                        print(f"📊 Resultados: {len(response.get('results', []))} items")
+                
+            except Exception as gen_error:
+                error_msg = f"Error al generar proyecto: {str(gen_error)}"
+                print(f"❌ {error_msg}")
+                raise Exception(error_msg)
+            
+            # Extract response text with validation
+            response_text = None
+            if isinstance(response, dict):
+                # Try to extract from results array
+                results = response.get("results", [])
+                if results and len(results) > 0:
+                    response_text = results[0].get("generated_text", "")
+                    print(f"✅ Texto extraído de results[0]: {len(response_text)} caracteres")
+                
+                # Fallback: try direct generated_text key
+                if not response_text:
+                    response_text = response.get("generated_text", "")
+                    if response_text:
+                        print(f"✅ Texto extraído de generated_text directo: {len(response_text)} caracteres")
+                
+                # Last resort: stringify the whole response
+                if not response_text:
+                    response_text = str(response)
+                    print(f"⚠️ Usando stringify de respuesta completa: {len(response_text)} caracteres")
+            else:
+                response_text = str(response)
+                print(f"⚠️ Respuesta no es dict, usando str(): {len(response_text)} caracteres")
+            
+            # Validate we got something
+            if not response_text or response_text.strip() == "":
+                print(f"❌ Respuesta vacía detectada!")
+                print(f"📊 Debug - Respuesta completa: {response}")
+                raise Exception("La respuesta de watsonx.ai está vacía. Verifica tu configuración y modelo.")
+            
+            print(f"✅ Validación exitosa: {len(response_text)} caracteres")
+            
+            # Clean and parse JSON with robust error handling
+            response_text = response_text.strip()
+            print(f"🔍 Limpiando respuesta...")
+            
+            # Remove markdown code blocks if present
+            if "```json" in response_text:
+                # Extract content between ```json and ```
+                import re
+                json_match = re.search(r'```json\s*\n(.*?)\n```', response_text, re.DOTALL)
+                if json_match:
+                    response_text = json_match.group(1)
+                    print(f"✅ JSON extraído de markdown block")
+            elif response_text.startswith("```"):
+                # Generic code block
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    response_text = parts[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:]
+                    print(f"✅ Código extraído de block genérico")
+            
+            response_text = response_text.strip()
+            
+            # Try to find JSON object in the response
+            import re
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group()
+                print(f"✅ JSON object encontrado: {len(response_text)} caracteres")
+            
+            # Parse JSON with better error handling
+            try:
+                print(f"🔄 Intentando parsear JSON...")
+                project_data = json.loads(response_text)
+                print(f"✅ JSON parseado exitosamente!")
+            except json.JSONDecodeError as e:
+                print(f"❌ Error de JSON en línea {e.lineno}, columna {e.colno}: {e.msg}")
+                print(f"📊 Contexto: {response_text[max(0, e.pos-50):e.pos+50]}")
+                
+                # Try to fix common JSON issues
+                print(f"🔧 Intentando reparar JSON...")
+                
+                # Fix 1: Replace single quotes with double quotes
+                fixed_text = response_text.replace("'", '"')
+                
+                # Fix 2: Remove trailing commas
+                fixed_text = re.sub(r',(\s*[}\]])', r'\1', fixed_text)
+                
+                # Fix 3: Escape unescaped quotes in strings
+                # This is complex, so we'll try a simple approach
+                
+                try:
+                    project_data = json.loads(fixed_text)
+                    print(f"✅ JSON reparado y parseado!")
+                except json.JSONDecodeError as e2:
+                    print(f"❌ No se pudo reparar el JSON")
+                    print(f"📄 Respuesta completa (primeros 500 chars):")
+                    print(response_text[:500])
+                    raise ValueError(f"No se pudo parsear JSON: {e.msg} en línea {e.lineno}, columna {e.colno}")
+            
+            # Validate required fields
+            if "project_name" not in project_data:
+                project_data["project_name"] = description.replace(" ", "-").lower()[:30]
+            if "description" not in project_data:
+                project_data["description"] = description
+            if "structure" not in project_data:
+                project_data["structure"] = {"src/": ["main.py"]}
+            
+            return project_data
+            
+        except Exception as e:
+            raise Exception(f"Error en watsonx.ai scaffolder: {str(e)}")
+    
+    def _on_generate_files(self, project_data: Dict):
+        """Handle Generate Files button click"""
+        try:
+            import os
+            
+            project_name = project_data.get("project_name", "project")
+            structure = project_data.get("structure", {})
+            files = project_data.get("files", {})
+            
+            # Create project directory
+            base_path = os.path.join(os.getcwd(), project_name)
+            os.makedirs(base_path, exist_ok=True)
+            
+            # Create folder structure
+            for folder in structure.keys():
+                folder_path = os.path.join(base_path, folder)
+                os.makedirs(folder_path, exist_ok=True)
+            
+            # Create files with content
+            for file_path, content in files.items():
+                full_path = os.path.join(base_path, file_path)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            
+            self._show_notification(f"✅ Proyecto '{project_name}' generado en {base_path}", "success")
+            
+        except Exception as e:
+            self._show_notification(f"❌ Error al generar archivos: {str(e)}", "error")
+    
+    def _on_copy_structure(self, project_data: Dict):
+        """Handle Copy Structure button click"""
+        try:
+            # Format structure as text
+            structure_text = f"# {project_data.get('project_name', 'Project')}\n\n"
+            structure_text += f"{project_data.get('description', '')}\n\n"
+            structure_text += "## Structure\n```\n"
+            
+            for folder, files in project_data.get("structure", {}).items():
+                structure_text += f"{folder}\n"
+                for file in files:
+                    structure_text += f"  ├── {file}\n"
+            
+            structure_text += "```\n\n"
+            
+            # Add tech stack
+            if "tech_stack" in project_data:
+                structure_text += "## Tech Stack\n"
+                for tech in project_data["tech_stack"]:
+                    structure_text += f"- {tech}\n"
+                structure_text += "\n"
+            
+            # Add commands
+            if "commands" in project_data:
+                structure_text += "## Commands\n"
+                for cmd_name, cmd in project_data["commands"].items():
+                    structure_text += f"- **{cmd_name}**: `{cmd}`\n"
+            
+            # Copy to clipboard (using page clipboard if available)
+            if hasattr(self.page, 'set_clipboard'):
+                self.page.set_clipboard(structure_text)
+                self._show_notification("✅ Estructura copiada al portapapeles", "success")
+            else:
+                # Fallback: show in dialog
+                dialog = ft.AlertDialog(
+                    title=ft.Text("Estructura del Proyecto"),
+                    content=ft.Container(
+                        content=ft.TextField(
+                            value=structure_text,
+                            multiline=True,
+                            read_only=True,
+                            min_lines=10,
+                            max_lines=20,
+                        ),
+                        width=600,
+                    ),
+                    actions=[
+                        ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog())
+                    ],
+                )
+                self.page.dialog = dialog
+                dialog.open = True
+                self.page.update()
+                
+        except Exception as e:
+            self._show_notification(f"❌ Error al copiar: {str(e)}", "error")
             raise Exception(f"Error en watsonx.ai: {str(e)}")
             
     async def _on_logout(self, e):

@@ -1,10 +1,14 @@
 import flet as ft
 import os
 import asyncio
+import json
+import hashlib
 from dotenv import load_dotenv
 from ibm_watsonx_ai import APIClient
 from ibm_watsonx_ai.foundation_models import ModelInference
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
+from typing import Optional, Callable, List
+from datetime import datetime
 
 from design_constants import (
     COLOR_BOTON,
@@ -20,30 +24,1476 @@ from design_constants import (
 load_dotenv()
 
 
+# ============================================================================
+# CONFIGURATION CLASS - Centralized API Configuration
+# ============================================================================
+class AppConfig:
+    """Centralized configuration for API endpoints and app settings"""
+    
+    def __init__(self):
+        self.watsonx_api_key = os.getenv("WATSONX_API_KEY")
+        self.watsonx_project_id = os.getenv("WATSONX_PROJECT_ID")
+        self.watsonx_url = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+        self.jwt_secret = os.getenv("JWT_SECRET")
+        self.api_endpoint = os.getenv("API_ENDPOINT", "http://localhost:8000")
+        self.users_file = "data/usuarios.json"
+        
+    def is_watsonx_configured(self) -> bool:
+        """Check if watsonx.ai is properly configured"""
+        return bool(self.watsonx_api_key and self.watsonx_project_id)
+    
+    def is_auth_configured(self) -> bool:
+        """Check if JWT authentication is configured"""
+        return bool(self.jwt_secret)
+
+
+# ============================================================================
+# AUTHENTICATION MANAGER
+# ============================================================================
+class AuthManager:
+    """Handle user authentication and registration"""
+    
+    def __init__(self, users_file: str):
+        self.users_file = users_file
+        self._ensure_users_file()
+    
+    def _ensure_users_file(self):
+        """Ensure users file exists"""
+        os.makedirs(os.path.dirname(self.users_file), exist_ok=True)
+        if not os.path.exists(self.users_file):
+            with open(self.users_file, 'w') as f:
+                json.dump({}, f)
+    
+    def _hash_password(self, password: str) -> str:
+        """Hash password using SHA-256"""
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def register(self, username: str, password: str) -> tuple[bool, str]:
+        """Register a new user"""
+        try:
+            with open(self.users_file, 'r') as f:
+                users = json.load(f)
+            
+            if username in users:
+                return False, "El usuario ya existe"
+            
+            users[username] = {
+                "password": self._hash_password(password),
+                "created_at": datetime.now().isoformat(),
+                "status": "online"
+            }
+            
+            with open(self.users_file, 'w') as f:
+                json.dump(users, f, indent=2)
+            
+            return True, "Usuario registrado exitosamente"
+        except Exception as e:
+            return False, f"Error al registrar: {str(e)}"
+    
+    def login(self, username: str, password: str) -> tuple[bool, str]:
+        """Authenticate user"""
+        try:
+            with open(self.users_file, 'r') as f:
+                users = json.load(f)
+            
+            if username not in users:
+                return False, "Usuario no encontrado"
+            
+            if users[username]["password"] != self._hash_password(password):
+                return False, "Contraseña incorrecta"
+            
+            return True, "Login exitoso"
+        except Exception as e:
+            return False, f"Error al iniciar sesión: {str(e)}"
+
+
+# ============================================================================
+# COMPONENT CLASSES - Modular Reactive Architecture
+# ============================================================================
+
+class LoadingIndicator(ft.Container):
+    """Reusable loading indicator component with animation"""
+    
+    def __init__(self, message: str = "Cargando..."):
+        self.message = message
+        super().__init__(
+            content=self._build_content(),
+            padding=ft.padding.all(20),
+            alignment=ft.alignment.center,
+        )
+        
+    def _build_content(self):
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.ProgressRing(
+                        width=40,
+                        height=40,
+                        stroke_width=4,
+                        color=COLOR_BOTON,
+                    ),
+                    ft.Text(
+                        self.message,
+                        size=14,
+                        color=COLOR_TEXTO_CHAT,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=10,
+            ),
+            padding=ft.padding.all(20),
+            alignment=ft.alignment.center,
+        )
+
+
+class NotificationBanner(ft.UserControl):
+    """Notification banner for user feedback"""
+    
+    def __init__(self, message: str, notification_type: str = "info"):
+        super().__init__()
+        self.message = message
+        self.notification_type = notification_type
+        
+    def build(self):
+        colors = {
+            "info": "#0078D4",
+            "success": "#107C10",
+            "warning": "#FF8C00",
+            "error": "#D13438",
+        }
+        
+        icons = {
+            "info": ft.icons.INFO_OUTLINED,
+            "success": ft.icons.CHECK_CIRCLE_OUTLINED,
+            "warning": ft.icons.WARNING_AMBER_OUTLINED,
+            "error": ft.icons.ERROR_OUTLINE,
+        }
+        
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        icons.get(self.notification_type, ft.icons.INFO_OUTLINED),
+                        color="white",
+                        size=20,
+                    ),
+                    ft.Text(
+                        self.message,
+                        size=13,
+                        color="white",
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+            ),
+            bgcolor=colors.get(self.notification_type, colors["info"]),
+            padding=ft.padding.all(12),
+            border_radius=8,
+            animate=ft.animation.Animation(300, ft.AnimationCurve.EASE_OUT),
+        )
+
+
+class MessageBubble(ft.UserControl):
+    """Enhanced message bubble component with timestamps and actions"""
+    
+    def __init__(self, username: str, message: str, timestamp: Optional[str] = None, 
+                 is_own: bool = False, on_pin: Optional[Callable] = None):
+        super().__init__()
+        self.username = username
+        self.message = message
+        self.timestamp = timestamp or datetime.now().strftime("%H:%M")
+        self.is_own = is_own
+        self.on_pin = on_pin
+        
+    def build(self):
+        message_content = ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text(
+                            f"{self.username}",
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=COLOR_BOTON if self.is_own else COLOR_TEXTO_ALIAS,
+                        ),
+                        ft.Text(
+                            self.timestamp,
+                            size=11,
+                            color="#999999",
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                ft.Text(
+                    self.message,
+                    size=13,
+                    color=COLOR_TEXTO_CHAT,
+                    selectable=True,
+                ),
+            ],
+            spacing=4,
+        )
+        
+        # Add action buttons on hover
+        actions = ft.Row(
+            controls=[
+                ft.IconButton(
+                    icon=ft.icons.PUSH_PIN_OUTLINED,
+                    icon_size=16,
+                    tooltip="Fijar mensaje",
+                    on_click=self.on_pin,
+                    icon_color="#999999",
+                ),
+                ft.IconButton(
+                    icon=ft.icons.REPLY,
+                    icon_size=16,
+                    tooltip="Responder",
+                    icon_color="#999999",
+                ),
+            ],
+            spacing=0,
+            visible=False,
+        )
+        
+        container = ft.Container(
+            content=ft.Row(
+                controls=[message_content, actions],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            padding=ft.padding.symmetric(horizontal=15, vertical=8),
+            border_radius=8,
+            bgcolor="transparent",
+            animate=ft.animation.Animation(200, ft.AnimationCurve.EASE_IN_OUT),
+            on_hover=lambda e: self._toggle_actions(e, actions),
+        )
+        
+        return container
+    
+    def _toggle_actions(self, e, actions):
+        """Toggle action buttons visibility on hover"""
+        actions.visible = e.data == "true"
+        self.update()
+
+
+class RoomButton(ft.UserControl):
+    """Enhanced room button with active state and notifications"""
+    
+    def __init__(self, room_name: str, is_active: bool = False, 
+                 unread_count: int = 0, on_click: Optional[Callable] = None):
+        super().__init__()
+        self.room_name = room_name
+        self.is_active = is_active
+        self.unread_count = unread_count
+        self.on_click_handler = on_click
+        
+    def build(self):
+        badge = None
+        if self.unread_count > 0:
+            badge = ft.Container(
+                content=ft.Text(
+                    str(self.unread_count),
+                    size=11,
+                    color="white",
+                    weight=ft.FontWeight.BOLD,
+                ),
+                bgcolor="#D13438",
+                border_radius=10,
+                padding=ft.padding.symmetric(horizontal=6, vertical=2),
+            )
+        
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.icons.TAG,
+                        size=18,
+                        color=COLOR_BOTON if self.is_active else "#999999",
+                    ),
+                    ft.Text(
+                        self.room_name,
+                        size=14,
+                        color=COLOR_TEXTO_CHAT if self.is_active else "#CCCCCC",
+                        weight=ft.FontWeight.BOLD if self.is_active else ft.FontWeight.NORMAL,
+                        expand=True,
+                    ),
+                    badge if badge else ft.Container(),
+                ],
+                spacing=10,
+            ),
+            padding=ft.padding.symmetric(horizontal=15, vertical=10),
+            bgcolor=COLOR_ENTRADA_OSCURA if self.is_active else "transparent",
+            border_radius=8,
+            ink=True,
+            on_click=self.on_click_handler,
+            animate=ft.animation.Animation(200, ft.AnimationCurve.EASE_IN_OUT),
+        )
+
+
+class SearchBar(ft.UserControl):
+    """Search bar component for filtering messages"""
+    
+    def __init__(self, on_search: Optional[Callable] = None):
+        super().__init__()
+        self.on_search = on_search
+        
+    def build(self):
+        return ft.Container(
+            content=ft.TextField(
+                hint_text="Buscar salas...",
+                hint_style=ft.TextStyle(color="#999999", size=13),
+                text_style=ft.TextStyle(color=COLOR_TEXTO_CHAT, size=13),
+                border_color="transparent",
+                focused_border_color=COLOR_BOTON,
+                bgcolor=COLOR_ENTRADA_OSCURA,
+                prefix_icon=ft.icons.SEARCH,
+                on_change=self.on_search,
+                height=40,
+                content_padding=ft.padding.symmetric(horizontal=10, vertical=8),
+            ),
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+
+
+class UserProfileCard(ft.UserControl):
+    """User profile card with status indicator"""
+    
+    def __init__(self, username: str, status: str = "online"):
+        super().__init__()
+        self.username = username
+        self.status = status
+        
+    def build(self):
+        status_colors = {
+            "online": "#107C10",
+            "away": "#FF8C00",
+            "offline": "#999999",
+        }
+        
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Stack(
+                        controls=[
+                            ft.CircleAvatar(
+                                content=ft.Text(
+                                    self.username[0].upper(),
+                                    size=16,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="white",
+                                ),
+                                bgcolor=COLOR_BOTON,
+                                radius=20,
+                            ),
+                            ft.Container(
+                                content=ft.Container(
+                                    width=10,
+                                    height=10,
+                                    bgcolor=status_colors.get(self.status, "#999999"),
+                                    border_radius=5,
+                                    border=ft.border.all(2, COLOR_BARRA_LATERAL_CHAT),
+                                ),
+                                right=0,
+                                bottom=0,
+                            ),
+                        ],
+                        width=40,
+                        height=40,
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Text(
+                                self.username,
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
+                                color=COLOR_TEXTO_CHAT,
+                            ),
+                            ft.Text(
+                                self.status.capitalize(),
+                                size=11,
+                                color="#999999",
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+            ),
+            padding=ft.padding.all(10),
+        )
+
+
+# ============================================================================
+# LOGIN/REGISTER VIEW
+# ============================================================================
+
+class LoginView(ft.UserControl):
+    """Login and registration view"""
+    
+    def __init__(self, on_login_success: Callable):
+        super().__init__()
+        self.on_login_success = on_login_success
+        self.auth_manager = AuthManager("data/usuarios.json")
+        self.is_register_mode = False
+        
+    def build(self):
+        self.username_field = ft.TextField(
+            label="Usuario",
+            hint_text="Ingresa tu usuario",
+            prefix_icon=ft.icons.PERSON,
+            bgcolor=COLOR_ENTRADA_OSCURA,
+            border_color=COLOR_BOTON,
+            focused_border_color=COLOR_BOTON,
+            color=COLOR_TEXTO_CHAT,
+            width=350,
+        )
+        
+        self.password_field = ft.TextField(
+            label="Contraseña",
+            hint_text="Ingresa tu contraseña",
+            prefix_icon=ft.icons.LOCK,
+            password=True,
+            can_reveal_password=True,
+            bgcolor=COLOR_ENTRADA_OSCURA,
+            border_color=COLOR_BOTON,
+            focused_border_color=COLOR_BOTON,
+            color=COLOR_TEXTO_CHAT,
+            width=350,
+            on_submit=lambda e: self._handle_submit(),
+        )
+        
+        self.error_text = ft.Text(
+            "",
+            color="#D13438",
+            size=12,
+            visible=False,
+        )
+        
+        self.submit_button = ft.ElevatedButton(
+            text="Iniciar Sesión",
+            icon=ft.icons.LOGIN,
+            bgcolor=COLOR_BOTON,
+            color="white",
+            width=350,
+            height=45,
+            on_click=lambda e: self._handle_submit(),
+        )
+        
+        self.toggle_button = ft.TextButton(
+            text="¿No tienes cuenta? Regístrate",
+            on_click=self._toggle_mode,
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Container(height=50),
+                    ft.Icon(
+                        ft.icons.CHAT_BUBBLE_ROUNDED,
+                        size=80,
+                        color=COLOR_BOTON,
+                    ),
+                    ft.Text(
+                        "IBM Chat",
+                        size=32,
+                        weight=ft.FontWeight.BOLD,
+                        color=COLOR_TEXTO_CHAT,
+                    ),
+                    ft.Text(
+                        "Secure Communication Platform",
+                        size=14,
+                        color="#999999",
+                    ),
+                    ft.Container(height=30),
+                    self.username_field,
+                    self.password_field,
+                    self.error_text,
+                    ft.Container(height=10),
+                    self.submit_button,
+                    self.toggle_button,
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=15,
+            ),
+            bgcolor=COLOR_FONDO_CHAT,
+            expand=True,
+            alignment=ft.alignment.center,
+        )
+    
+    def _toggle_mode(self, e):
+        """Toggle between login and register mode"""
+        self.is_register_mode = not self.is_register_mode
+        if self.is_register_mode:
+            self.submit_button.text = "Registrarse"
+            self.submit_button.icon = ft.icons.PERSON_ADD
+            self.toggle_button.text = "¿Ya tienes cuenta? Inicia sesión"
+        else:
+            self.submit_button.text = "Iniciar Sesión"
+            self.submit_button.icon = ft.icons.LOGIN
+            self.toggle_button.text = "¿No tienes cuenta? Regístrate"
+        self.error_text.visible = False
+        self.update()
+    
+    def _handle_submit(self):
+        """Handle login or registration"""
+        username = self.username_field.value
+        password = self.password_field.value
+        
+        if not username or not password:
+            self.error_text.value = "Por favor completa todos los campos"
+            self.error_text.visible = True
+            self.update()
+            return
+        
+        if len(username) < 3:
+            self.error_text.value = "El usuario debe tener al menos 3 caracteres"
+            self.error_text.visible = True
+            self.update()
+            return
+        
+        if len(password) < 4:
+            self.error_text.value = "La contraseña debe tener al menos 4 caracteres"
+            self.error_text.visible = True
+            self.update()
+            return
+        
+        if self.is_register_mode:
+            success, message = self.auth_manager.register(username, password)
+        else:
+            success, message = self.auth_manager.login(username, password)
+        
+        if success:
+            self.on_login_success(username)
+        else:
+            self.error_text.value = message
+            self.error_text.visible = True
+            self.update()
+
+
+# ============================================================================
+# MAIN APPLICATION CLASS
+# ============================================================================
+
 class FletChatApp:
     """
-    Aplicación de Chat usando Flet con Material Design 3.
-    Interfaz traducida desde CustomTkinter manteniendo la estructura visual.
+    Enhanced Chat Application with Material Design 3
     """
     
     def __init__(self, page: ft.Page):
         self.page = page
-        self.alias = ""
+        self.config = AppConfig()
+        self.alias = None
+        self.current_room = "General"
+        self.is_loading = False
+        self.auth_token: Optional[str] = None
+        self.is_authenticated = False
         
+        # Component references
+        self.message_list: ft.ListView = None
+        self.message_input: ft.TextField = None
+        self.send_button: ft.ElevatedButton = None
+        self.notification_container: ft.Container = None
+        self.pinned_message_text: ft.Text = None
+        self.room_buttons: dict = {}
+        self.main_container: ft.Container = None
+        
+        # Setup and build
+        self._setup_page()
+        self._show_login()
+        
+    def _setup_page(self):
+        """Configure page properties with responsive design"""
+        self.page.title = "IBM Chat - Secure Communication Platform"
+        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.padding = 0
+        self.page.spacing = 0
+        
+        # Material Design 3 theme
+        self.page.theme = ft.Theme(
+            color_scheme_seed=COLOR_BOTON,
+            use_material3=True,
+        )
+        
+        self.page.bgcolor = COLOR_FONDO_CHAT
+        
+        # Responsive window configuration
+        self.page.window.width = 1200
+        self.page.window.height = 700
+        self.page.window.min_width = 800
+        self.page.window.min_height = 500
+        
+        # Keyboard shortcuts
+        self.page.on_keyboard_event = self._handle_keyboard
     
-    async def summarize_chat(self, history: list[str]) -> str:
-        """Genera un resumen del historial de chat usando IBM watsonx.ai"""
+    def _show_login(self):
+        """Show login/register view"""
+        login_view = LoginView(on_login_success=self._on_login_success)
+        self.page.clean()
+        self.page.add(login_view)
+        self.page.update()
+    
+    def _on_login_success(self, username: str):
+        """Handle successful login"""
+        self.alias = username
+        self.is_authenticated = True
+        self.page.clean()
+        self._build_ui()
+        self._show_notification(f"¡Bienvenido, {username}!", "success")
+        
+    def _handle_keyboard(self, e: ft.KeyboardEvent):
+        """Handle keyboard shortcuts for accessibility"""
+        if not self.is_authenticated:
+            return
+        if e.key == "Enter" and e.ctrl:
+            self._on_send_message(None)
+            
+    def _build_ui(self):
+        """Build the main UI with modular components"""
+        
+        # Notification area (top)
+        self.notification_container = ft.Container(
+            content=ft.Column(controls=[], spacing=5),
+            padding=ft.padding.all(10),
+            visible=False,
+        )
+        
+        # Main layout
+        self.main_container = ft.Container(
+            content=ft.Column(
+                controls=[
+                    self.notification_container,
+                    ft.Row(
+                        controls=[
+                            self._build_sidebar(),
+                            self._build_chat_area(),
+                        ],
+                        spacing=0,
+                        expand=True,
+                    ),
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            bgcolor=COLOR_FONDO_CHAT,
+            expand=True,
+        )
+        
+        self.page.add(self.main_container)
+        self.page.update()
+        
+    def _build_sidebar(self):
+        """Build enhanced sidebar with user profile and room list"""
+        
+        # User profile section
+        user_profile = ft.Container(
+            content=UserProfileCard(self.alias, "online"),
+            padding=ft.padding.all(10),
+        )
+        
+        # Search bar
+        search_bar = SearchBar(on_search=self._on_search_rooms)
+        
+        # Room list
+        rooms = ["General", "Desarrollo", "Soporte", "Anuncios", "Proyectos"]
+        room_list_controls = []
+        
+        for room in rooms:
+            is_active = room == self.current_room
+            unread = 3 if room == "Desarrollo" else 0
+            room_btn = RoomButton(
+                room_name=room,
+                is_active=is_active,
+                unread_count=unread,
+                on_click=lambda e, r=room: self._on_room_click(r)
+            )
+            self.room_buttons[room] = room_btn
+            room_list_controls.append(room_btn)
+        
+        room_list = ft.Container(
+            content=ft.ListView(
+                controls=room_list_controls,
+                spacing=5,
+                padding=ft.padding.all(10),
+            ),
+            expand=True,
+        )
+        
+        # Action buttons
+        action_buttons = ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.ElevatedButton(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.icons.AUTO_AWESOME, size=18),
+                                ft.Text("Resumir Chat", size=13),
+                            ],
+                            spacing=8,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        bgcolor=COLOR_BOTON,
+                        color=COLOR_TEXTO_CHAT,
+                        width=220,
+                        height=45,
+                        on_click=self._on_summarize_click,
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                    ft.Divider(height=1, color="#444444"),
+                    ft.ElevatedButton(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.icons.SETTINGS, size=18),
+                                ft.Text("Configuración", size=13),
+                            ],
+                            spacing=8,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        bgcolor="transparent",
+                        color=COLOR_TEXTO_CHAT,
+                        width=220,
+                        height=40,
+                        on_click=self._on_settings_click,
+                    ),
+                    ft.ElevatedButton(
+                        content=ft.Row(
+                            controls=[
+                                ft.Icon(ft.icons.LOGOUT, size=18),
+                                ft.Text("Salir", size=13),
+                            ],
+                            spacing=8,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        bgcolor="#B00020",
+                        color=COLOR_TEXTO_CHAT,
+                        width=220,
+                        height=40,
+                        on_click=self._on_logout,
+                        style=ft.ButtonStyle(
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                spacing=10,
+            ),
+            padding=ft.padding.all(10),
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    user_profile,
+                    ft.Divider(height=1, color="#444444"),
+                    ft.Container(
+                        content=ft.Text(
+                            "CANALES",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color="#999999",
+                        ),
+                        padding=ft.padding.symmetric(horizontal=15, vertical=10),
+                    ),
+                    search_bar,
+                    room_list,
+                    action_buttons,
+                ],
+                spacing=0,
+            ),
+            width=250,
+            bgcolor=COLOR_BARRA_LATERAL_CHAT,
+            expand=False,
+        )
+        
+    def _build_chat_area(self):
+        """Build enhanced chat area with header and message list"""
+        
+        # Chat header with room info
+        chat_header = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.icons.TAG,
+                                size=24,
+                                color=COLOR_TEXTO_ALIAS,
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        self.current_room,
+                                        size=18,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=COLOR_TEXTO_CHAT,
+                                    ),
+                                    ft.Text(
+                                        "12 miembros • 3 en línea",
+                                        size=11,
+                                        color="#999999",
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.IconButton(
+                                icon=ft.icons.SEARCH,
+                                icon_size=20,
+                                tooltip="Buscar en el chat",
+                                icon_color="#999999",
+                                on_click=self._on_search_messages,
+                            ),
+                            ft.IconButton(
+                                icon=ft.icons.NOTIFICATIONS_OUTLINED,
+                                icon_size=20,
+                                tooltip="Notificaciones",
+                                icon_color="#999999",
+                            ),
+                            ft.IconButton(
+                                icon=ft.icons.INFO_OUTLINE,
+                                icon_size=20,
+                                tooltip="Información del canal",
+                                icon_color="#999999",
+                            ),
+                        ],
+                        spacing=5,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            padding=ft.padding.all(15),
+            bgcolor=COLOR_HEADER_CHAT,
+            border=ft.border.only(bottom=ft.BorderSide(1, "#444444")),
+        )
+        
+        # Pinned message area
+        self.pinned_message_text = ft.Text(
+            "(Ningún mensaje fijado)",
+            size=12,
+            italic=True,
+            color="#AAAAAA",
+        )
+        
+        pinned_message = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.PUSH_PIN, size=16, color="#FFA500"),
+                    ft.Text(
+                        "FIJADO:",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color="#FFA500",
+                    ),
+                    self.pinned_message_text,
+                ],
+                spacing=8,
+            ),
+            padding=ft.padding.symmetric(horizontal=20, vertical=10),
+            bgcolor="#2B3A42",
+            visible=True,
+        )
+        
+        # Message list with sample messages
+        self.message_list = ft.ListView(
+            controls=[
+                self._create_system_message("Bienvenido al canal #General"),
+                MessageBubble("Usuario1", "¡Hola a todos! ¿Cómo están?", "10:30", on_pin=self._on_pin_message),
+                MessageBubble("Usuario2", "Todo bien, trabajando en el nuevo proyecto", "10:32", on_pin=self._on_pin_message),
+                MessageBubble(self.alias, "Excelente, ¿necesitan ayuda?", "10:35", is_own=True, on_pin=self._on_pin_message),
+                self._create_system_message("Usuario3 se ha unido al canal"),
+            ],
+            spacing=8,
+            padding=ft.padding.all(15),
+            expand=True,
+            auto_scroll=True,
+        )
+        
+        messages_container = ft.Container(
+            content=self.message_list,
+            bgcolor=COLOR_FONDO_CHAT,
+            expand=True,
+        )
+        
+        # Enhanced input area
+        input_area = self._build_input_area()
+        
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    chat_header,
+                    pinned_message,
+                    messages_container,
+                    input_area,
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=COLOR_FONDO_CHAT,
+        )
+        
+    def _build_input_area(self):
+        """Build enhanced input area with formatting options"""
+        
+        self.message_input = ft.TextField(
+            hint_text="Escribe un mensaje... (Ctrl+Enter para enviar)",
+            hint_style=ft.TextStyle(color="#999999", size=14),
+            text_style=ft.TextStyle(color=COLOR_TEXTO_CHAT, size=14),
+            border_color="transparent",
+            focused_border_color=COLOR_BOTON,
+            bgcolor=COLOR_HEADER_CHAT,
+            multiline=True,
+            min_lines=1,
+            max_lines=5,
+            expand=True,
+            on_submit=self._on_send_message,
+            shift_enter=True,
+            content_padding=ft.padding.all(12),
+        )
+        
+        self.send_button = ft.IconButton(
+            icon=ft.icons.SEND_ROUNDED,
+            icon_size=24,
+            bgcolor=COLOR_BOTON,
+            icon_color="white",
+            tooltip="Enviar mensaje (Ctrl+Enter)",
+            on_click=self._on_send_message,
+            width=50,
+            height=50,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=25),
+            ),
+        )
+        
+        # Formatting toolbar with functional buttons
+        toolbar = ft.Row(
+            controls=[
+                ft.IconButton(
+                    icon=ft.icons.ATTACH_FILE,
+                    icon_size=20,
+                    tooltip="Adjuntar archivo",
+                    icon_color="#999999",
+                    on_click=self._on_attach_file,
+                ),
+                ft.IconButton(
+                    icon=ft.icons.EMOJI_EMOTIONS_OUTLINED,
+                    icon_size=20,
+                    tooltip="Emojis",
+                    icon_color="#999999",
+                    on_click=self._on_emoji_click,
+                ),
+                ft.IconButton(
+                    icon=ft.icons.GIF_BOX_OUTLINED,
+                    icon_size=20,
+                    tooltip="GIF",
+                    icon_color="#999999",
+                    on_click=self._on_gif_click,
+                ),
+            ],
+            spacing=5,
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Container(
+                        content=ft.Row(
+                            controls=[
+                                toolbar,
+                            ],
+                        ),
+                        padding=ft.padding.symmetric(horizontal=15, vertical=5),
+                    ),
+                    ft.Container(
+                        content=ft.Row(
+                            controls=[
+                                self.message_input,
+                                self.send_button,
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=15, vertical=10),
+                    ),
+                ],
+                spacing=0,
+            ),
+            bgcolor=COLOR_FONDO_CHAT,
+            border=ft.border.only(top=ft.BorderSide(1, "#444444")),
+        )
+    
+    def _on_attach_file(self, e):
+        """Handle file attachment"""
+        file_picker = ft.FilePicker(on_result=self._on_file_picked)
+        self.page.overlay.append(file_picker)
+        self.page.update()
+        file_picker.pick_files(
+            dialog_title="Seleccionar archivo",
+            allow_multiple=False,
+        )
+    
+    def _on_file_picked(self, e: ft.FilePickerResultEvent):
+        """Handle file selection"""
+        if e.files:
+            file = e.files[0]
+            file_message = f"📎 Archivo adjunto: {file.name}"
+            new_message = MessageBubble(
+                self.alias,
+                file_message,
+                datetime.now().strftime("%H:%M"),
+                is_own=True,
+                on_pin=self._on_pin_message
+            )
+            self.message_list.controls.append(new_message)
+            self.page.update()
+            self._show_notification(f"Archivo '{file.name}' adjuntado", "success")
+    
+    def _on_emoji_click(self, e):
+        """Show emoji picker dialog"""
+        emojis = ["😀", "😂", "😍", "🎉", "👍", "❤️", "🔥", "✨", "💯", "🚀", 
+                  "👋", "🙌", "💪", "🤔", "😎", "🥳", "😊", "🤗", "😇", "🤩"]
+        
+        emoji_buttons = []
+        for emoji in emojis:
+            emoji_buttons.append(
+                ft.TextButton(
+                    text=emoji,
+                    style=ft.ButtonStyle(
+                        text_style=ft.TextStyle(size=24),
+                    ),
+                    on_click=lambda e, em=emoji: self._insert_emoji(em),
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Selecciona un emoji"),
+            content=ft.Container(
+                content=ft.GridView(
+                    controls=emoji_buttons,
+                    runs_count=5,
+                    max_extent=60,
+                    child_aspect_ratio=1,
+                    spacing=5,
+                    run_spacing=5,
+                ),
+                width=300,
+                height=200,
+            ),
+            actions=[
+                ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog()),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _insert_emoji(self, emoji: str):
+        """Insert emoji into message input"""
+        current_text = self.message_input.value or ""
+        self.message_input.value = current_text + emoji
+        self._close_dialog()
+        self.page.update()
+    
+    def _on_gif_click(self, e):
+        """Show GIF picker dialog"""
+        gif_urls = [
+            "https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif",
+            "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
+            "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
+        ]
+        
+        gif_buttons = []
+        for i, url in enumerate(gif_urls):
+            gif_buttons.append(
+                ft.ElevatedButton(
+                    text=f"GIF {i+1}",
+                    on_click=lambda e, u=url: self._insert_gif(u),
+                    width=100,
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Selecciona un GIF"),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text("GIFs populares:", size=12, color="#999999"),
+                        ft.Row(
+                            controls=gif_buttons,
+                            spacing=10,
+                            wrap=True,
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                width=300,
+            ),
+            actions=[
+                ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog()),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _insert_gif(self, gif_url: str):
+        """Insert GIF into chat"""
+        gif_message = f"🎬 GIF: {gif_url}"
+        new_message = MessageBubble(
+            self.alias,
+            gif_message,
+            datetime.now().strftime("%H:%M"),
+            is_own=True,
+            on_pin=self._on_pin_message
+        )
+        self.message_list.controls.append(new_message)
+        self._close_dialog()
+        self.page.update()
+        self._show_notification("GIF enviado", "success")
+    
+    def _close_dialog(self):
+        """Close current dialog"""
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
+        
+    def _create_system_message(self, message: str):
+        """Create a system message"""
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.INFO_OUTLINE, size=14, color="#999999"),
+                    ft.Text(
+                        message,
+                        size=12,
+                        italic=True,
+                        color="#999999",
+                    ),
+                ],
+                spacing=8,
+            ),
+            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+        )
+        
+    def _show_notification(self, message: str, notification_type: str = "info"):
+        """Show notification banner"""
+        notification = NotificationBanner(message, notification_type)
+        self.notification_container.content.controls.append(notification)
+        self.notification_container.visible = True
+        self.page.update()
+        
+        # Auto-hide after 3 seconds
+        async def hide_notification():
+            await asyncio.sleep(3)
+            if notification in self.notification_container.content.controls:
+                self.notification_container.content.controls.remove(notification)
+                if not self.notification_container.content.controls:
+                    self.notification_container.visible = False
+                self.page.update()
+        
+        asyncio.create_task(hide_notification())
+        
+    def _on_send_message(self, e):
+        """Handle message sending with validation"""
+        if not self.message_input.value or not self.message_input.value.strip():
+            return
+            
+        message_text = self.message_input.value.strip()
+        
+        # Check for commands
+        if message_text.startswith("/"):
+            self._handle_command(message_text)
+            self.message_input.value = ""
+            self.page.update()
+            return
+        
+        # Add message to list
+        new_message = MessageBubble(
+            self.alias,
+            message_text,
+            datetime.now().strftime("%H:%M"),
+            is_own=True,
+            on_pin=self._on_pin_message
+        )
+        self.message_list.controls.append(new_message)
+        
+        # Clear input
+        self.message_input.value = ""
+        self.page.update()
+        
+        # TODO: Send to server via API
+        print(f"[{self.current_room}] {self.alias}: {message_text}")
+        
+    def _handle_command(self, command: str):
+        """Handle chat commands"""
+        if command == "/help":
+            help_text = """
+Comandos disponibles:
+/help - Mostrar esta ayuda
+/clear - Limpiar mensajes
+/status - Ver estado de conexión
+/rooms - Listar salas disponibles
+            """
+            self.message_list.controls.append(
+                self._create_system_message(help_text.strip())
+            )
+        elif command == "/clear":
+            self.message_list.controls.clear()
+            self._show_notification("Mensajes limpiados", "success")
+        elif command == "/status":
+            status = "🟢 Conectado" if self.config.is_watsonx_configured() else "🔴 Desconectado"
+            self.message_list.controls.append(
+                self._create_system_message(f"Estado: {status}")
+            )
+        elif command == "/rooms":
+            rooms = ", ".join(self.room_buttons.keys())
+            self.message_list.controls.append(
+                self._create_system_message(f"Salas: {rooms}")
+            )
+        else:
+            self._show_notification(f"Comando desconocido: {command}", "warning")
+            
+    def _on_room_click(self, room_name: str):
+        """Handle room selection"""
+        if room_name == self.current_room:
+            return
+            
+        # Update active state
+        for room, button in self.room_buttons.items():
+            button.is_active = (room == room_name)
+            button.update()
+        
+        self.current_room = room_name
+        self._show_notification(f"Cambiado a #{room_name}", "info")
+        
+        # TODO: Load room messages from server
+        print(f"Switched to room: {room_name}")
+        
+    def _on_pin_message(self, e):
+        """Handle message pinning"""
+        self.pinned_message_text.value = "Este es un mensaje fijado de ejemplo"
+        self.pinned_message_text.italic = False
+        self._show_notification("Mensaje fijado", "success")
+        self.page.update()
+        
+    def _on_search_rooms(self, e):
+        """Handle room search"""
+        search_term = e.control.value.lower()
+        for room, button in self.room_buttons.items():
+            button.visible = search_term in room.lower()
+            button.update()
+            
+    def _on_search_messages(self, e):
+        """Handle message search in chat"""
+        search_field = ft.TextField(
+            hint_text="Buscar mensajes...",
+            prefix_icon=ft.icons.SEARCH,
+            autofocus=True,
+            on_submit=lambda e: self._perform_message_search(e.control.value),
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Buscar en el chat"),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        search_field,
+                        ft.Text(
+                            "Presiona Enter para buscar",
+                            size=11,
+                            color="#999999",
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                width=300,
+            ),
+            actions=[
+                ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog()),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _perform_message_search(self, search_term: str):
+        """Perform message search"""
+        if not search_term:
+            return
+        
+        found_messages = []
+        for control in self.message_list.controls:
+            if isinstance(control, MessageBubble):
+                if search_term.lower() in control.message.lower():
+                    found_messages.append(f"{control.username}: {control.message}")
+        
+        if found_messages:
+            result_text = f"Encontrados {len(found_messages)} mensajes:\n" + "\n".join(found_messages[:5])
+            if len(found_messages) > 5:
+                result_text += f"\n... y {len(found_messages) - 5} más"
+        else:
+            result_text = "No se encontraron mensajes"
+        
+        self._close_dialog()
+        self._show_notification(result_text, "info")
+        
+    def _on_settings_click(self, e):
+        """Handle settings button click"""
+        settings_content = ft.Column(
+            controls=[
+                ft.Text("Configuración de Usuario", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                ft.Row(
+                    controls=[
+                        ft.Text("Tema:", size=14),
+                        ft.Dropdown(
+                            options=[
+                                ft.dropdown.Option("Oscuro"),
+                                ft.dropdown.Option("Claro"),
+                                ft.dropdown.Option("Auto"),
+                            ],
+                            value="Oscuro",
+                            width=150,
+                        ),
+                    ],
+                    spacing=20,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Text("Notificaciones:", size=14),
+                        ft.Switch(value=True),
+                    ],
+                    spacing=20,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Text("Sonidos:", size=14),
+                        ft.Switch(value=True),
+                    ],
+                    spacing=20,
+                ),
+                ft.Divider(),
+                ft.Text("Configuración de Watson AI", size=16, weight=ft.FontWeight.BOLD),
+                ft.TextField(
+                    label="API Key",
+                    value=self.config.watsonx_api_key or "",
+                    password=True,
+                    can_reveal_password=True,
+                ),
+                ft.TextField(
+                    label="Project ID",
+                    value=self.config.watsonx_project_id or "",
+                ),
+            ],
+            spacing=15,
+        )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Configuración"),
+            content=ft.Container(
+                content=settings_content,
+                width=400,
+                height=400,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: self._close_dialog()),
+                ft.ElevatedButton("Guardar", on_click=lambda e: self._save_settings()),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _save_settings(self):
+        """Save settings"""
+        self._close_dialog()
+        self._show_notification("Configuración guardada", "success")
+        
+    async def _on_summarize_click(self, e):
+        """Handle chat summarization with loading state"""
+        if not self.config.is_watsonx_configured():
+            self._show_notification(
+                "❌ Configura WATSONX_API_KEY y WATSONX_PROJECT_ID en .env",
+                "error"
+            )
+            return
+        
+        # Extract message history
+        history = []
+        for control in self.message_list.controls:
+            if isinstance(control, MessageBubble):
+                history.append(f"{control.username}: {control.message}")
+        
+        if not history:
+            self._show_notification("No hay mensajes para resumir", "warning")
+            return
+        
+        # Show loading indicator
+        loading = LoadingIndicator("Generando resumen con IBM watsonx.ai...")
+        self.message_list.controls.append(loading)
+        self.page.update()
+        
         try:
-            api_key = os.getenv("WATSONX_API_KEY")
-            project_id = os.getenv("WATSONX_PROJECT_ID")
-            url = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+            # Generate summary
+            summary = await self._summarize_chat(history)
             
-            if not api_key or not project_id:
-                return "❌ Error: Configura WATSONX_API_KEY y WATSONX_PROJECT_ID en .env"
+            # Remove loading indicator
+            self.message_list.controls.remove(loading)
             
+            # Add summary message
+            summary_container = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Icon(ft.icons.AUTO_AWESOME, size=18, color="#00FF7F"),
+                                ft.Text(
+                                    "RESUMEN IA (IBM watsonx.ai)",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#00FF7F",
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        ft.Text(
+                            summary,
+                            size=13,
+                            color=COLOR_TEXTO_CHAT,
+                            selectable=True,
+                        ),
+                    ],
+                    spacing=8,
+                ),
+                padding=ft.padding.all(15),
+                bgcolor="#1E3A2F",
+                border_radius=8,
+                border=ft.border.all(1, "#00FF7F"),
+            )
+            self.message_list.controls.append(summary_container)
+            self._show_notification("Resumen generado exitosamente", "success")
+            
+        except Exception as e:
+            self.message_list.controls.remove(loading)
+            self._show_notification(f"Error al generar resumen: {str(e)}", "error")
+        
+        self.page.update()
+        
+    async def _summarize_chat(self, history: List[str]) -> str:
+        """Generate chat summary using IBM watsonx.ai"""
+        try:
             credentials = {
-                "url": url,
-                "apikey": api_key
+                "url": self.config.watsonx_url,
+                "apikey": self.config.watsonx_api_key
             }
             
             client = APIClient(credentials)
@@ -63,7 +1513,7 @@ Resumen:"""
             model = ModelInference(
                 model_id="meta-llama/llama-3-70b-instruct",
                 api_client=client,
-                project_id=project_id,
+                project_id=self.config.watsonx_project_id,
                 params={
                     GenParams.MAX_NEW_TOKENS: 500,
                     GenParams.TEMPERATURE: 0.7,
@@ -78,401 +1528,27 @@ Resumen:"""
             return str(response)
             
         except Exception as e:
-            return f"❌ Error al generar resumen: {str(e)}"
-        # Configuración de la página
-        self._setup_page()
-        
-        # Componentes principales con type hints
-        self.message_list: ft.ListView
-        self.message_input: ft.TextField
-        self.send_button: ft.ElevatedButton
-        
-        # Construir interfaz
-        self._build_ui()
-    
-    def _setup_page(self):
-        """Configura las propiedades básicas de la página"""
-        self.page.title = "Chat Seguro - Flet Material Design 3"
-        self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.padding = 0
-        self.page.spacing = 0
-        
-        # Tema personalizado con Material Design 3
-        self.page.theme = ft.Theme(
-            color_scheme_seed=COLOR_BOTON,
-            use_material3=True,
-        )
-        
-        # Colores personalizados para tema oscuro
-        self.page.bgcolor = COLOR_FONDO_CHAT
-        
-        # Tamaño de ventana (API moderna de Flet)
-        self.page.window.width = 900
-        self.page.window.height = 600
-        self.page.window.min_width = 400
-        self.page.window.min_height = 400
-    
-    def _build_ui(self):
-        """Construye la interfaz principal del chat"""
-        
-        # Contenedor principal con tema oscuro
-        main_container = ft.Container(
-            content=ft.Row(
-                controls=[
-                    # Barra lateral izquierda (20% del ancho)
-                    self._build_sidebar(),
-                    
-                    # Área central del chat (80% del ancho)
-                    self._build_chat_area(),
-                ],
-                spacing=0,
-                expand=True,
-            ),
-            bgcolor=COLOR_FONDO_CHAT,
-            expand=True,
-        )
-        
-        self.page.add(main_container)
-    
-    def _build_sidebar(self):
-        """Construye la barra lateral con lista de salas"""
-        return ft.Container(
-            content=ft.Column(
-                controls=[
-                    # Encabezado de la barra lateral
-                    ft.Container(
-                        content=ft.Text(
-                            "Salas",
-                            size=20,
-                            weight=ft.FontWeight.BOLD,
-                            color=COLOR_TEXTO_CHAT,
-                        ),
-                        padding=ft.padding.all(20),
-                        bgcolor=COLOR_BARRA_LATERAL_CHAT,
-                    ),
-                    
-                    # Lista de salas (scrollable)
-                    ft.Container(
-                        content=ft.ListView(
-                            controls=[
-                                self._create_room_button("General"),
-                                self._create_room_button("Desarrollo"),
-                                self._create_room_button("Soporte"),
-                                self._create_room_button("Anuncios"),
-                            ],
-                            spacing=5,
-                            padding=ft.padding.all(10),
-                        ),
-                        expand=True,
-                        bgcolor=COLOR_BARRA_LATERAL_CHAT,
-                    ),
-                    
-                    # Botón de salir en la parte inferior
-                    ft.Container(
-                        content=ft.Column(
-                            controls=[
-                                ft.ElevatedButton(
-                                    "🤖 Resumir Chat",
-                                    bgcolor="#0078D4",
-                                    color=COLOR_TEXTO_CHAT,
-                                    width=180,
-                                    on_click=self._on_summarize_click,
-                                ),
-                                ft.ElevatedButton(
-                                    "Salir",
-                                    bgcolor="#B00020",
-                                    color=COLOR_TEXTO_CHAT,
-                                    width=180,
-                                    on_click=self._on_logout,
-                                ),
-                            ],
-                            spacing=10,
-                        ),
-                        padding=ft.padding.all(10),
-                        bgcolor=COLOR_BARRA_LATERAL_CHAT,
-                    ),
-                ],
-                spacing=0,
-            ),
-            width=200,
-            bgcolor=COLOR_BARRA_LATERAL_CHAT,
-            expand=False,
-        )
-    
-    def _create_room_button(self, room_name: str):
-        """Crea un botón para una sala de chat"""
-        return ft.TextButton(
-            content=ft.Container(
-                content=ft.Text(
-                    room_name,
-                    size=14,
-                    color=COLOR_TEXTO_CHAT,
-                ),
-                padding=ft.padding.symmetric(horizontal=15, vertical=10),
-            ),
-            style=ft.ButtonStyle(
-                bgcolor={
-                    ft.ControlState.DEFAULT: "transparent",
-                    ft.ControlState.HOVERED: COLOR_ENTRADA_OSCURA,
-                },
-                overlay_color="transparent",
-            ),
-            on_click=lambda e, room=room_name: self._on_room_click(room),
-        )
-    
-    def _build_chat_area(self):
-        """Construye el área central del chat"""
-        
-        # Header del chat
-        chat_header = ft.Container(
-            content=ft.Row(
-                controls=[
-                    ft.Text(
-                        "#",
-                        size=20,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLOR_TEXTO_ALIAS,
-                    ),
-                    ft.Text(
-                        "General",
-                        size=18,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLOR_TEXTO_CHAT,
-                    ),
-                ],
-                spacing=10,
-            ),
-            padding=ft.padding.all(15),
-            bgcolor=COLOR_HEADER_CHAT,
-        )
-        
-        # Área de mensajes fijados
-        pinned_message = ft.Container(
-            content=ft.Row(
-                controls=[
-                    ft.Text(
-                        "📌 FIJADO:",
-                        size=12,
-                        weight=ft.FontWeight.BOLD,
-                        color="#FFA500",
-                    ),
-                    ft.Text(
-                        "(Ningún mensaje fijado)",
-                        size=12,
-                        italic=True,
-                        color="#AAAAAA",
-                    ),
-                ],
-                spacing=5,
-            ),
-            padding=ft.padding.symmetric(horizontal=20, vertical=8),
-            bgcolor="#2B3A42",
-        )
-        
-        # ListView para mensajes (80% de la pantalla)
-        self.message_list = ft.ListView(
-            controls=[
-                self._create_system_message("Bienvenido al chat"),
-                self._create_message("Usuario1", "Hola a todos!"),
-                self._create_message("Usuario2", "¿Cómo están?"),
-                self._create_system_message("Usuario3 se ha unido a la sala"),
-            ],
-            spacing=10,
-            padding=ft.padding.all(15),
-            expand=True,
-            auto_scroll=True,
-        )
-        
-        # Contenedor de mensajes con scroll
-        messages_container = ft.Container(
-            content=self.message_list,
-            bgcolor=COLOR_FONDO_CHAT,
-            expand=True,
-        )
-        
-        # Campo de entrada y botón de envío
-        input_area = self._build_input_area()
-        
-        # Columna principal del área de chat
-        return ft.Container(
-            content=ft.Column(
-                controls=[
-                    chat_header,
-                    pinned_message,
-                    messages_container,
-                    input_area,
-                ],
-                spacing=0,
-                expand=True,
-            ),
-            expand=True,
-            bgcolor=COLOR_FONDO_CHAT,
-        )
-    
-    def _build_input_area(self):
-        """Construye el área de entrada de mensajes"""
-        
-        # Campo de texto para escribir mensajes
-        self.message_input = ft.TextField(
-            hint_text="Escribe un mensaje... (/help para comandos)",
-            hint_style=ft.TextStyle(color="#999999"),
-            text_style=ft.TextStyle(color=COLOR_TEXTO_CHAT, size=14),
-            border_color=COLOR_ENTRADA_OSCURA,
-            focused_border_color=COLOR_BOTON,
-            bgcolor=COLOR_HEADER_CHAT,
-            multiline=False,
-            max_lines=1,
-            expand=True,
-            on_submit=self._on_send_message,
-            text_size=14,
-        )
-        
-        # Botón de envío
-        self.send_button = ft.ElevatedButton(
-            "Enviar",
-            bgcolor=COLOR_BOTON,
-            color=COLOR_TEXTO_CHAT,
-            height=50,
-            on_click=self._on_send_message,
-            style=ft.ButtonStyle(
-                bgcolor={
-                    ft.ControlState.HOVERED: COLOR_BOTON_HOVER,
-                },
-            ),
-        )
-        
-        # Contenedor del área de entrada
-        return ft.Container(
-            content=ft.Row(
-                controls=[
-                    self.message_input,
-                    self.send_button,
-                ],
-                spacing=10,
-            ),
-            padding=ft.padding.all(15),
-            bgcolor=COLOR_FONDO_CHAT,
-        )
-    
-    def _create_message(self, username: str, message: str):
-        """Crea un mensaje de usuario"""
-        return ft.Container(
-            content=ft.Column(
-                controls=[
-                    ft.Text(
-                        f"{username}:",
-                        size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLOR_TEXTO_ALIAS,
-                    ),
-                    ft.Text(
-                        message,
-                        size=13,
-                        color=COLOR_TEXTO_CHAT,
-                    ),
-                ],
-                spacing=2,
-            ),
-            padding=ft.padding.symmetric(horizontal=10, vertical=5),
-        )
-    
-    def _create_system_message(self, message: str):
-        """Crea un mensaje del sistema"""
-        return ft.Container(
-            content=ft.Text(
-                f"[SISTEMA] {message}",
-                size=12,
-                italic=True,
-                color="#999999",
-            ),
-            padding=ft.padding.symmetric(horizontal=10, vertical=5),
-        )
-    
-    def _on_send_message(self, e):
-        """Maneja el envío de mensajes"""
-        if self.message_input.value and self.message_input.value.strip():
-            message_text = self.message_input.value.strip()
+            raise Exception(f"Error en watsonx.ai: {str(e)}")
             
-            # Agregar mensaje a la lista
-            new_message = self._create_message(self.alias or "Tú", message_text)
-            self.message_list.controls.append(new_message)
-            
-            # Limpiar campo de entrada
-            self.message_input.value = ""
-            
-            # Actualizar la página
-            self.page.update()
-            
-            # Aquí iría la lógica de red para enviar el mensaje
-            print(f"Mensaje enviado: {message_text}")
-    
-    def _on_room_click(self, room_name: str):
-        """Maneja el clic en una sala"""
-    
-    async def _on_summarize_click(self, e):
-        """Maneja el clic en el botón de resumir chat"""
-        history = []
-        for control in self.message_list.controls:
-            if isinstance(control, ft.Container) and hasattr(control, 'content'):
-                content = control.content
-                if isinstance(content, ft.Column) and hasattr(content, 'controls'):
-                    for text_control in content.controls:
-                        if isinstance(text_control, ft.Text) and text_control.value:
-                            history.append(text_control.value)
-        
-        if not history:
-            self.message_list.controls.append(
-                self._create_system_message("No hay mensajes para resumir")
-            )
-            self.page.update()
-            return
-        
-        self.message_list.controls.append(
-            self._create_system_message("🤖 Generando resumen con IBM watsonx.ai...")
-        )
-        self.page.update()
-        
-        summary = await self.summarize_chat(history)
-        
-        self.message_list.controls.append(
-            ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Text(
-                            "✨ RESUMEN IA (IBM watsonx.ai)",
-                            size=14,
-                            weight=ft.FontWeight.BOLD,
-                            color="#00FF7F",
-                        ),
-                        ft.Text(
-                            summary,
-                            size=13,
-                            color=COLOR_TEXTO_CHAT,
-                        ),
-                    ],
-                    spacing=5,
-                ),
-                padding=ft.padding.all(15),
-                bgcolor="#1E3A2F",
-                border_radius=8,
-            )
-        )
-        self.page.update()
-    
     async def _on_logout(self, e):
-        """Maneja el cierre de sesión"""
-        print("Cerrando sesión...")
-        # Aquí iría la lógica de desconexión
-        await self.page.window.close()
+        """Handle logout"""
+        self._show_notification("Cerrando sesión...", "info")
+        await asyncio.sleep(1)
+        self.is_authenticated = False
+        self.alias = None
+        self._show_login()
 
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
 
 def main(page: ft.Page):
-    """Función principal de la aplicación Flet"""
+    """Main application entry point"""
     app = FletChatApp(page)
 
 
 if __name__ == "__main__":
-    # Ejecutar la aplicación
     ft.app(target=main)
 
-# Made with Bob
+# Made with Bob - Enhanced UI/UX with Login/Register and Full Features

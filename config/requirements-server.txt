@@ -1,4 +1,4 @@
-# Dependencias del Cliente Flet
+# Dependencias del Servidor
 # Python 3.11+
 
 # Framework de UI
@@ -16,6 +16,5 @@ requests==2.31.0
 # Variables de entorno
 python-dotenv==1.0.1
 
-# PostgreSQL Database (OPTIONAL - moved to requirements-postgres.txt)
-# For PostgreSQL support, install: pip install -r requirements-postgres.txt
-# This keeps the app fast by not loading heavy database libraries by default
+# JSON-based storage - no external database dependencies needed
+# All data stored in data/json/ directory

@@ -10,6 +10,7 @@ LABEL description="Servidor de chat con SSL/TLS y persistencia de datos"
 # Variables de entorno
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 ENV DATA_DIR=/app/data
 ENV CERT_DIR=/app/certs
 ENV SERVER_HOST=0.0.0.0

@@ -42,14 +42,17 @@ COPY config/requirements-client.txt .
 # Instalar dependencias de Python
 RUN pip install --no-cache-dir -r requirements-client.txt
 
-# Copiar código fuente
-COPY src/ ./src/
-COPY config/.env.example .env
+# ... (mantén lo de arriba igual: FROM, apt-get, pip install)
 
-# Exponer puerto para Flet web server
+# 1. Asegúrate de copiar TODA la carpeta src, no solo archivos sueltos
+COPY src/ ./src/
+
+# 2. ESTA ES LA CLAVE: Agregamos el directorio raíz al PATH de Python
+ENV PYTHONPATH=/app
+
 EXPOSE 8550
 
-# Comando de inicio - Flet en modo web
-CMD ["python", "-m", "flet", "run", "--web", "--port", "8550", "src/client/flet_app.py"]
+# 3. Comando corregido apuntando a la nueva ruta
+CMD ["flet", "run", "--web", "--host", "0.0.0.0", "--port", "8550", "src/client/flet_app.py"]
 
 # Made with Bob

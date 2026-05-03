@@ -1,12 +1,20 @@
 @echo off
 REM Script de inicio rápido para Windows
-REM Chat Multi-Hilo - Docker
+REM Chat Multi-Hilo - Docker Auto-Scaffolder
+
+cls
 
 echo.
-echo ========================================
-echo   Chat Multi-Hilo - Inicio Rapido
-echo ========================================
+echo ===============================================================
 echo.
+echo        CHAT MULTI-HILO AUTO-SCAFFOLDER
+echo.
+echo              Powered by IBM watsonx.ai
+echo.
+echo ===============================================================
+echo.
+
+echo [1/6] Verificando Docker...
 
 REM Verificar Docker
 docker --version >nul 2>&1
@@ -29,9 +37,15 @@ if errorlevel 1 (
 echo [OK] Docker detectado correctamente
 echo.
 
-REM Verificar certificados SSL
+echo [2/6] Limpiando contenedores previos...
+docker compose down >nul 2>&1
+docker rm -f chat-server chat-client-flet >nul 2>&1
+echo [OK] Limpieza completada
+echo.
+
+echo [3/6] Verificando certificados SSL...
 if not exist "certs\server.crt" (
-    echo [INFO] Generando certificados SSL...
+    echo Generando certificados SSL...
     if not exist "certs" mkdir certs
     
     REM Verificar si OpenSSL está disponible
@@ -42,7 +56,6 @@ if not exist "certs\server.crt" (
         echo Opciones:
         echo 1. Instala OpenSSL desde: https://slproweb.com/products/Win32OpenSSL.html
         echo 2. Usa Git Bash y ejecuta: bash generate_certs.sh
-        echo 3. Genera manualmente los certificados
         pause
         exit /b 1
     )
@@ -52,33 +65,44 @@ if not exist "certs\server.crt" (
 ) else (
     echo [OK] Certificados SSL encontrados
 )
-
 echo.
-echo [INFO] Construyendo imagenes Docker...
-docker compose build
 
+echo [4/6] Construyendo imagenes Docker...
+docker compose build --no-cache
+echo [OK] Imagenes construidas
 echo.
-echo [INFO] Iniciando servicios...
-docker compose up -d
 
+echo [5/6] Iniciando servicios...
+docker compose up -d --build
+echo [OK] Servicios iniciados
 echo.
-echo [INFO] Esperando que los servicios esten listos...
-timeout /t 5 /nobreak >nul
 
+echo [6/6] Esperando que los servicios esten listos...
+timeout /t 8 /nobreak >nul
 echo.
-echo [INFO] Estado de los servicios:
+
+echo ===============================================================
+echo.
+echo     ENTORNO SCAFFOLDEADO EXITOSAMENTE
+echo.
+echo ===============================================================
+echo.
+
+echo Estado de los servicios:
 docker compose ps
+echo.
 
+echo ===============================================================
+echo                  ACCESO AL SISTEMA
+echo ===============================================================
 echo.
-echo ========================================
-echo   Sistema iniciado correctamente
-echo ========================================
+echo   Cliente Web:  http://localhost:8550
+echo   Servidor:     localhost:5000
+echo   IA:           IBM watsonx.ai (configurar .env)
 echo.
-echo Accesos:
-echo   - Cliente Web: http://localhost:8550
-echo   - Servidor:    localhost:5000
-echo   - Ollama IA:   http://localhost:11434
+echo ===============================================================
 echo.
+
 echo Comandos utiles:
 echo   - Ver logs:    docker compose logs -f
 echo   - Detener:     docker compose down

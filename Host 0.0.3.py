@@ -4,7 +4,6 @@ import json
 import hashlib
 import os
 import ssl
-import requests
 from datetime import datetime
 import time
 
@@ -18,9 +17,6 @@ historial_file = os.path.join(DATA_DIR, "historial.json")
 pines_file = os.path.join(DATA_DIR, "pines.json")
 salas_file = os.path.join(DATA_DIR, "salas.json")
 
-# Configuración de OLLAMA
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-MODELO_IA = os.getenv("MODELO_IA", "llama3.2:3b")
 
 # Configuración de certificados SSL
 CERT_DIR = os.getenv("CERT_DIR", "./certs")
@@ -229,41 +225,6 @@ def enviar_historial_a_usuario(conn, sala):
     comando = f"HISTORY_BATCH:{historial_json}"
     enviar_privado(conn, comando)
 
-# --- LÓGICA DE INTELIGENCIA ARTIFICIAL ---
-def generar_resumen_ollama(sala):
-    """Lee el historial del caché y solicita un resumen a Llama 3.2"""
-    with cache_lock:
-        mensajes = historial_cache.get(sala, [])
-    
-    if not mensajes:
-        return "No hay suficientes mensajes para generar un resumen."
-    
-    ultimos_mensajes = mensajes[-20:]
-    texto_conversacion = "\n".join(ultimos_mensajes)
-    
-    prompt_sistema = (
-        f"Eres un asistente de secretaría técnica. Resume la siguiente conversación del chat de la sala '{sala}'. "
-        "Ignora los mensajes de sistema como [ENTRÓ], [SALIÓ]. "
-        "Enumera los puntos clave y decisiones. Sé breve y profesional en español."
-    )
-    
-    payload = {
-        "model": MODELO_IA,
-        "prompt": f"{prompt_sistema}\n\nConversación:\n{texto_conversacion}",
-        "stream": False,
-        "keep_alive": 3600
-    }
-    
-    try:
-        print(f"🤖 [IA] Generando resumen para {sala}...")
-        response = requests.post(OLLAMA_URL, json=payload, timeout=90)
-        response.raise_for_status()
-        resultado = response.json()
-        return resultado.get("response", "La IA no devolvió respuesta.")
-    except requests.exceptions.ConnectionError:
-        return "❌ Error: El servicio de IA (Ollama) no está corriendo en el servidor."
-    except Exception as e:
-        return f"❌ Error generando resumen: {str(e)}"
 
 # --- FUNCIONES DE PINES ---
 def cargar_pines():
@@ -376,11 +337,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
     es_admin = (rol == "admin")
 
     if comando == "/resume":
-        enviar_privado(conn, "🤖 La IA está leyendo el historial... esto puede tardar unos segundos.")
-        resumen = generar_resumen_ollama(sala_actual)
-        enviar_privado(conn, f"\n✨ --- RESUMEN IA ({sala_actual}) --- ✨\n")
-        enviar_privado(conn, resumen)
-        enviar_privado(conn, "\n----------------------------------------\n")
+        enviar_privado(conn, "ℹ️ El comando /resume ha sido deshabilitado.")
+        enviar_privado(conn, "💡 Usa el botón 'Resumir Chat' en la interfaz web para generar resúmenes con IBM watsonx.ai")
         return True
 
     if comando == "/crear":
@@ -749,13 +707,7 @@ def main():
     autosave_thread.start()
     print("💾 [AUTOSAVE] Hilo de guardado automático iniciado.")
     
-    # Verificación de IA
-    try:
-        requests.get("http://localhost:11434")
-        print("🤖 [IA] Ollama detectado y listo.")
-    except:
-        print("⚠️ [IA] OLLAMA NO RESPONDE. El comando /resume fallará.")
-        print("   -> Asegúrate de ejecutar 'ollama serve' en la Raspberry.")
+    print("🤖 [IA] Resúmenes disponibles mediante IBM watsonx.ai en la interfaz web.")
 
     try:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)

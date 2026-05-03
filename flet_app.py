@@ -1,4 +1,11 @@
 import flet as ft
+import os
+import asyncio
+from dotenv import load_dotenv
+from ibm_watsonx_ai import APIClient
+from ibm_watsonx_ai.foundation_models import ModelInference
+from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
+
 from design_constants import (
     COLOR_BOTON,
     COLOR_BOTON_HOVER,
@@ -9,6 +16,8 @@ from design_constants import (
     COLOR_TEXTO_CHAT,
     COLOR_TEXTO_ALIAS
 )
+
+load_dotenv()
 
 
 class FletChatApp:
@@ -21,6 +30,55 @@ class FletChatApp:
         self.page = page
         self.alias = ""
         
+    
+    async def summarize_chat(self, history: list[str]) -> str:
+        """Genera un resumen del historial de chat usando IBM watsonx.ai"""
+        try:
+            api_key = os.getenv("WATSONX_API_KEY")
+            project_id = os.getenv("WATSONX_PROJECT_ID")
+            url = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+            
+            if not api_key or not project_id:
+                return "❌ Error: Configura WATSONX_API_KEY y WATSONX_PROJECT_ID en .env"
+            
+            credentials = {
+                "url": url,
+                "apikey": api_key
+            }
+            
+            client = APIClient(credentials)
+            
+            conversation_text = "\n".join(history[-20:])
+            
+            prompt = f"""Eres un asistente de secretaría técnica. Resume la siguiente conversación de chat empresarial.
+Ignora mensajes de sistema como [ENTRÓ], [SALIÓ].
+Enumera los puntos clave y decisiones importantes.
+Sé breve y profesional en español.
+
+Conversación:
+{conversation_text}
+
+Resumen:"""
+            
+            model = ModelInference(
+                model_id="meta-llama/llama-3-70b-instruct",
+                api_client=client,
+                project_id=project_id,
+                params={
+                    GenParams.MAX_NEW_TOKENS: 500,
+                    GenParams.TEMPERATURE: 0.7,
+                    GenParams.TOP_P: 0.9
+                }
+            )
+            
+            response = model.generate_text(prompt=prompt)
+            
+            if isinstance(response, dict):
+                return response.get("results", [{}])[0].get("generated_text", str(response))
+            return str(response)
+            
+        except Exception as e:
+            return f"❌ Error al generar resumen: {str(e)}"
         # Configuración de la página
         self._setup_page()
         
@@ -111,12 +169,24 @@ class FletChatApp:
                     
                     # Botón de salir en la parte inferior
                     ft.Container(
-                        content=ft.ElevatedButton(
-                            "Salir",
-                            bgcolor="#B00020",
-                            color=COLOR_TEXTO_CHAT,
-                            width=180,
-                            on_click=self._on_logout,
+                        content=ft.Column(
+                            controls=[
+                                ft.ElevatedButton(
+                                    "🤖 Resumir Chat",
+                                    bgcolor="#0078D4",
+                                    color=COLOR_TEXTO_CHAT,
+                                    width=180,
+                                    on_click=self._on_summarize_click,
+                                ),
+                                ft.ElevatedButton(
+                                    "Salir",
+                                    bgcolor="#B00020",
+                                    color=COLOR_TEXTO_CHAT,
+                                    width=180,
+                                    on_click=self._on_logout,
+                                ),
+                            ],
+                            spacing=10,
                         ),
                         padding=ft.padding.all(10),
                         bgcolor=COLOR_BARRA_LATERAL_CHAT,
@@ -338,20 +408,56 @@ class FletChatApp:
     
     def _on_room_click(self, room_name: str):
         """Maneja el clic en una sala"""
-        print(f"Cambiando a sala: {room_name}")
+    
+    async def _on_summarize_click(self, e):
+        """Maneja el clic en el botón de resumir chat"""
+        history = []
+        for control in self.message_list.controls:
+            if isinstance(control, ft.Container) and hasattr(control, 'content'):
+                content = control.content
+                if isinstance(content, ft.Column) and hasattr(content, 'controls'):
+                    for text_control in content.controls:
+                        if isinstance(text_control, ft.Text) and text_control.value:
+                            history.append(text_control.value)
         
-        # Limpiar mensajes actuales
-        self.message_list.controls.clear()
+        if not history:
+            self.message_list.controls.append(
+                self._create_system_message("No hay mensajes para resumir")
+            )
+            self.page.update()
+            return
         
-        # Agregar mensaje del sistema
         self.message_list.controls.append(
-            self._create_system_message(f"Conectando a {room_name}...")
+            self._create_system_message("🤖 Generando resumen con IBM watsonx.ai...")
         )
-        
-        # Actualizar la página
         self.page.update()
         
-        # Aquí iría la lógica de red para cambiar de sala
+        summary = await self.summarize_chat(history)
+        
+        self.message_list.controls.append(
+            ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(
+                            "✨ RESUMEN IA (IBM watsonx.ai)",
+                            size=14,
+                            weight=ft.FontWeight.BOLD,
+                            color="#00FF7F",
+                        ),
+                        ft.Text(
+                            summary,
+                            size=13,
+                            color=COLOR_TEXTO_CHAT,
+                        ),
+                    ],
+                    spacing=5,
+                ),
+                padding=ft.padding.all(15),
+                bgcolor="#1E3A2F",
+                border_radius=8,
+            )
+        )
+        self.page.update()
     
     async def _on_logout(self, e):
         """Maneja el cierre de sesión"""

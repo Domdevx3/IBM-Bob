@@ -1,10 +1,14 @@
-# Dependencias del Servidor de Chat
+# Dependencias del Cliente Flet
 # Python 3.11+
 
-# Sin dependencias externas - usa solo bibliotecas estándar:
-# - socket (networking)
-# - threading (concurrencia)
-# - json (serialización)
-# - hashlib (seguridad)
-# - ssl (encriptación)
-# - datetime (timestamps)
+# Framework de UI
+flet==0.24.1
+
+# Pillow para manejo de imágenes
+Pillow==10.4.0
+
+# IBM watsonx.ai
+ibm-watsonx-ai==1.1.2
+
+# Variables de entorno
+python-dotenv==1.0.1

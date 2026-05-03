@@ -1,0 +1,58 @@
+# Dockerfile para el Cliente Flet
+# Interfaz moderna con Material Design 3
+
+FROM python:3.11-slim
+
+# Metadata
+LABEL maintainer="Chat-Multihilo-DChat"
+LABEL description="Cliente de chat Flet con Material Design 3"
+
+# Variables de entorno
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV FLET_SERVER_PORT=8550
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias para Flet
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de requisitos
+COPY requirements-client.txt .
+
+# Instalar dependencias de Python
+RUN pip install --no-cache-dir -r requirements-client.txt
+
+# Copiar archivos del cliente
+COPY flet_app.py .
+COPY design_constants.py .
+COPY network_manager.py .
+COPY auth.py .
+COPY inter.jpg .
+
+# Exponer puerto para Flet web server
+EXPOSE 8550
+
+# Comando de inicio - Flet en modo web
+CMD ["python", "-m", "flet", "run", "--web", "--port", "8550", "flet_app.py"]
+
+# Made with Bob

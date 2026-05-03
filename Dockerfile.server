@@ -1,0 +1,57 @@
+# Dockerfile para el Servidor de Chat Multi-Hilo
+# Basado en Python 3.11 slim para optimizar tamaño
+
+FROM python:3.11-slim
+
+# Metadata
+LABEL maintainer="Chat-Multihilo-DChat"
+LABEL description="Servidor de chat seguro con SSL y soporte para IA (Ollama)"
+
+# Variables de entorno
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DATA_DIR=/app/data
+ENV CERT_DIR=/app/certs
+ENV SERVER_HOST=0.0.0.0
+ENV SERVER_PORT=5000
+ENV OLLAMA_URL=http://ollama:11434/api/generate
+ENV MODELO_IA=llama3.2:3b
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de requisitos primero (para aprovechar cache de Docker)
+COPY requirements-server.txt .
+
+# Instalar dependencias de Python
+RUN pip install --no-cache-dir -r requirements-server.txt
+
+# Copiar el código del servidor
+COPY Host\ 0.0.3.py ./server.py
+
+# Crear directorios para datos persistentes
+RUN mkdir -p /app/data /app/certs
+
+# Copiar script de generación de certificados
+COPY generate_certs.sh .
+RUN chmod +x generate_certs.sh
+
+# Exponer puerto del servidor
+EXPOSE 5000
+
+# Volúmenes para persistencia
+VOLUME ["/app/data", "/app/certs"]
+
+# Healthcheck para verificar que el servidor está corriendo
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 5000)); s.close()" || exit 1
+
+# Comando de inicio
+CMD ["python", "server.py"]
+
+# Made with Bob

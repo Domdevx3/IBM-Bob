@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # Servidor de Chat con SSL
+  chat-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: chat-server
+    ports:
+      - "5000:5000"  # Puerto del servidor de chat
+    volumes:
+      - ./data:/app/data  # Persistencia de usuarios, historial, salas
+      - ./certs:/app/certs  # Certificados SSL
+    environment:
+      - OLLAMA_URL=http://ollama:11434/api/generate
+      - MODELO_IA=llama3.2:3b
+    networks:
+      - chat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 5000)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - ollama
+
+  # Cliente Flet (Interfaz Web)
+  chat-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: chat-client-flet
+    ports:
+      - "8550:8550"  # Puerto web de Flet
+    environment:
+      - CHAT_SERVER_HOST=chat-server
+      - CHAT_SERVER_PORT=5000
+    networks:
+      - chat-network
+    restart: unless-stopped
+    depends_on:
+      chat-server:
+        condition: service_healthy
+
+  # Servicio de IA Ollama (Opcional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chat-ollama
+    ports:
+      - "11434:11434"  # Puerto API de Ollama
+    volumes:
+      - ollama-data:/root/.ollama  # Modelos de IA
+    networks:
+      - chat-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Si no tienes GPU, comenta la sección 'deploy' anterior
+
+networks:
+  chat-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  ollama-data:
+    driver: local
+
+# Made with Bob

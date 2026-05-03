@@ -1,0 +1,13 @@
+# Dependencias del Servidor de Chat
+# Python 3.11+
+
+# Servidor HTTP para IA
+requests==2.31.0
+
+# Sin dependencias adicionales - usa solo bibliotecas estándar:
+# - socket (networking)
+# - threading (concurrencia)
+# - json (serialización)
+# - hashlib (seguridad)
+# - ssl (encriptación)
+# - datetime (timestamps)

@@ -1,0 +1,10 @@
+# Dependencias del Cliente Flet
+# Python 3.11+
+
+# Framework de UI
+flet==0.24.1
+
+# Pillow para manejo de imágenes
+Pillow==10.4.0
+
+# Sin otras dependencias externas - network_manager usa solo bibliotecas estándar

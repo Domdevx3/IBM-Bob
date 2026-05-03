@@ -5,28 +5,52 @@
 
 set -e
 
-echo "🚀 Chat Multi-Hilo - Inicio Rápido"
-echo "===================================="
-echo ""
+# Colores ANSI
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
-# Verificar Docker
+clear
+
+echo -e "${CYAN}"
+cat << "EOF"
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║        🚀  CHAT MULTI-HILO AUTO-SCAFFOLDER  🚀           ║
+║                                                           ║
+║              Powered by IBM watsonx.ai                    ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+EOF
+echo -e "${NC}"
+
+echo -e "${BLUE}[1/6]${NC} Verificando Docker..."
+
 if ! command -v docker &> /dev/null; then
-    echo "❌ Error: Docker no está instalado."
+    echo -e "${RED}❌ Error: Docker no está instalado.${NC}"
     echo "   Instala Docker Desktop desde: https://www.docker.com/products/docker-desktop"
     exit 1
 fi
 
-# Verificar Docker Compose
 if ! docker compose version &> /dev/null; then
-    echo "❌ Error: Docker Compose no está disponible."
+    echo -e "${RED}❌ Error: Docker Compose no está disponible.${NC}"
     echo "   Asegúrate de tener Docker Desktop actualizado."
     exit 1
 fi
 
-echo "✅ Docker detectado correctamente"
+echo -e "${GREEN}✅ Docker detectado correctamente${NC}"
 echo ""
 
-# Verificar certificados SSL
+echo -e "${BLUE}[2/6]${NC} Limpiando contenedores previos..."
+docker compose down 2>/dev/null || true
+docker rm -f chat-server chat-client-flet 2>/dev/null || true
+echo -e "${GREEN}✅ Limpieza completada${NC}"
+echo ""
+
+echo -e "${BLUE}[3/6]${NC} Verificando certificados SSL..."
 if [ ! -f "certs/server.crt" ] || [ ! -f "certs/server.key" ]; then
     echo "🔐 Generando certificados SSL..."
     
@@ -34,7 +58,6 @@ if [ ! -f "certs/server.crt" ] || [ ! -f "certs/server.key" ]; then
         chmod +x generate_certs.sh
         ./generate_certs.sh
     else
-        echo "⚠️  Script de certificados no encontrado. Generando manualmente..."
         mkdir -p certs
         openssl req -x509 -newkey rsa:4096 -nodes \
             -keyout certs/server.key \
@@ -42,42 +65,58 @@ if [ ! -f "certs/server.crt" ] || [ ! -f "certs/server.key" ]; then
             -days 365 \
             -subj "/C=MX/ST=Estado/L=Ciudad/O=ChatSeguro/OU=IT/CN=chat-server" \
             2>/dev/null
-        echo "✅ Certificados generados"
     fi
+    echo -e "${GREEN}✅ Certificados generados${NC}"
 else
-    echo "✅ Certificados SSL encontrados"
+    echo -e "${GREEN}✅ Certificados SSL encontrados${NC}"
 fi
+echo ""
+
+echo -e "${BLUE}[4/6]${NC} Construyendo imágenes Docker..."
+docker compose build --no-cache
+echo -e "${GREEN}✅ Imágenes construidas${NC}"
+echo ""
+
+echo -e "${BLUE}[5/6]${NC} Iniciando servicios..."
+docker compose up -d --build
+echo -e "${GREEN}✅ Servicios iniciados${NC}"
+echo ""
+
+echo -e "${BLUE}[6/6]${NC} Esperando que los servicios estén listos..."
+sleep 8
 
 echo ""
-echo "📦 Construyendo imágenes Docker..."
-docker compose build
+echo -e "${CYAN}"
+cat << "EOF"
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║     ✨  ENTORNO SCAFFOLDEADO EXITOSAMENTE  ✨            ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+EOF
+echo -e "${NC}"
 
-echo ""
-echo "🚀 Iniciando servicios..."
-docker compose up -d
-
-echo ""
-echo "⏳ Esperando que los servicios estén listos..."
-sleep 5
-
-# Verificar estado
-echo ""
-echo "📊 Estado de los servicios:"
+echo -e "${GREEN}📊 Estado de los servicios:${NC}"
 docker compose ps
+echo ""
 
+echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║                  ACCESO AL SISTEMA                        ║${NC}"
+echo -e "${YELLOW}╠═══════════════════════════════════════════════════════════╣${NC}"
+echo -e "${YELLOW}║${NC}                                                           ${YELLOW}║${NC}"
+echo -e "${YELLOW}║${NC}  ${CYAN}🌐 Cliente Web:${NC}  http://localhost:8550                ${YELLOW}║${NC}"
+echo -e "${YELLOW}║${NC}  ${CYAN}🔌 Servidor:${NC}     localhost:5000                       ${YELLOW}║${NC}"
+echo -e "${YELLOW}║${NC}  ${CYAN}🤖 IA:${NC}           IBM watsonx.ai (configurar .env)     ${YELLOW}║${NC}"
+echo -e "${YELLOW}║${NC}                                                           ${YELLOW}║${NC}"
+echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "✨ ¡Listo! El sistema está corriendo."
-echo ""
-echo "📍 Accesos:"
-echo "   🌐 Cliente Web: http://localhost:8550"
-echo "   🔌 Servidor:    localhost:5000"
-echo "   🤖 Ollama IA:   http://localhost:11434"
-echo ""
-echo "📝 Comandos útiles:"
+
+echo -e "${BLUE}📝 Comandos útiles:${NC}"
 echo "   Ver logs:       docker compose logs -f"
 echo "   Detener:        docker compose down"
 echo "   Reiniciar:      docker compose restart"
 echo ""
-echo "📚 Documentación completa: DOCKER_README.md"
+echo -e "${BLUE}📚 Documentación:${NC} DOCKER_README.md"
+echo ""
 
 # Made with Bob

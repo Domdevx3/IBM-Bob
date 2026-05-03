@@ -1,0 +1,17 @@
+# Dependencias del Cliente Flet
+# Python 3.11+
+
+# Framework de UI
+flet==0.24.1
+
+# Pillow para manejo de imágenes
+Pillow==10.4.0
+
+# IBM watsonx.ai SDK
+ibm-watsonx-ai>=1.0.0
+
+# HTTP requests para Giphy API
+requests==2.31.0
+
+# Variables de entorno
+python-dotenv==1.0.1

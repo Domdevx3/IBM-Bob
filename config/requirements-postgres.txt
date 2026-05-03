@@ -1,0 +1,8 @@
+# Optional PostgreSQL Dependencies
+# Only install these if you need PostgreSQL support
+# Install with: pip install -r requirements-postgres.txt
+
+# PostgreSQL Database
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+asyncpg==0.29.0

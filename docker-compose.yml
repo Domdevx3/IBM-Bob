@@ -8,19 +8,13 @@ services:
       dockerfile: Dockerfile.server
     container_name: chat-server
     ports:
-      - "5000:5000"  # Puerto del servidor de chat
+      - "5001:5000"  # Puerto del servidor de chat (host:container)
     volumes:
       - ./data:/app/data  # Persistencia de usuarios, historial, salas
       - ./certs:/app/certs  # Certificados SSL
     networks:
       - chat-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 5000)); s.close()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
   # Cliente Flet (Interfaz Web)
   chat-client:
@@ -40,8 +34,7 @@ services:
       - chat-network
     restart: unless-stopped
     depends_on:
-      chat-server:
-        condition: service_healthy
+      - chat-server
 
 networks:
   chat-network:
@@ -51,3 +44,4 @@ networks:
         - subnet: 172.20.0.0/16
 
 # Made with Bob
+

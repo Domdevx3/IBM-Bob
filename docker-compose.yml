@@ -12,9 +12,6 @@ services:
     volumes:
       - ./data:/app/data  # Persistencia de usuarios, historial, salas
       - ./certs:/app/certs  # Certificados SSL
-    environment:
-      - OLLAMA_URL=http://ollama:11434/api/generate
-      - MODELO_IA=llama3.2:3b
     networks:
       - chat-network
     restart: unless-stopped
@@ -24,8 +21,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    depends_on:
-      - ollama
 
   # Cliente Flet (Interfaz Web)
   chat-client:
@@ -38,6 +33,9 @@ services:
     environment:
       - CHAT_SERVER_HOST=chat-server
       - CHAT_SERVER_PORT=5000
+      - WATSONX_API_KEY=${WATSONX_API_KEY}
+      - WATSONX_PROJECT_ID=${WATSONX_PROJECT_ID}
+      - WATSONX_URL=${WATSONX_URL:-https://us-south.ml.cloud.ibm.com}
     networks:
       - chat-network
     restart: unless-stopped
@@ -45,35 +43,11 @@ services:
       chat-server:
         condition: service_healthy
 
-  # Servicio de IA Ollama (Opcional)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: chat-ollama
-    ports:
-      - "11434:11434"  # Puerto API de Ollama
-    volumes:
-      - ollama-data:/root/.ollama  # Modelos de IA
-    networks:
-      - chat-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    # Si no tienes GPU, comenta la sección 'deploy' anterior
-
 networks:
   chat-network:
     driver: bridge
     ipam:
       config:
         - subnet: 172.20.0.0/16
-
-volumes:
-  ollama-data:
-    driver: local
 
 # Made with Bob

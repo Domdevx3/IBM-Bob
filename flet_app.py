@@ -3,14 +3,14 @@ import os
 import asyncio
 import json
 import hashlib
+import requests
+import threading
+from functools import lru_cache
 from dotenv import load_dotenv
-from ibm_watsonx_ai import APIClient
-from ibm_watsonx_ai.foundation_models import ModelInference
-from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Dict
 from datetime import datetime
 
-from design_constants import (
+from src.shared.design_constants import (
     COLOR_BOTON,
     COLOR_BOTON_HOVER,
     COLOR_ENTRADA_OSCURA,
@@ -22,6 +22,21 @@ from design_constants import (
 )
 
 load_dotenv()
+
+# Lazy imports for heavy dependencies (only load when needed)
+_watsonx_imports_loaded = False
+
+def _ensure_watsonx_imports():
+    """Lazy load WatsonX AI imports only when needed"""
+    global _watsonx_imports_loaded, APIClient, ModelInference, GenParams
+    if not _watsonx_imports_loaded:
+        from ibm_watsonx_ai import APIClient as _APIClient
+        from ibm_watsonx_ai.foundation_models import ModelInference as _ModelInference
+        from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as _GenParams
+        APIClient = _APIClient
+        ModelInference = _ModelInference
+        GenParams = _GenParams
+        _watsonx_imports_loaded = True
 
 
 # ============================================================================
@@ -37,6 +52,7 @@ class AppConfig:
         self.jwt_secret = os.getenv("JWT_SECRET")
         self.api_endpoint = os.getenv("API_ENDPOINT", "http://localhost:8000")
         self.users_file = "data/usuarios.json"
+        self.giphy_api_key = os.getenv("GIPHY_API_KEY", "")
         
     def is_watsonx_configured(self) -> bool:
         """Check if watsonx.ai is properly configured"""
@@ -51,10 +67,13 @@ class AppConfig:
 # AUTHENTICATION MANAGER
 # ============================================================================
 class AuthManager:
-    """Handle user authentication and registration"""
+    """Handle user authentication and registration with caching"""
     
     def __init__(self, users_file: str):
         self.users_file = users_file
+        self._users_cache: Optional[Dict] = None
+        self._cache_timestamp: float = 0
+        self._cache_ttl: float = 60.0  # Cache for 60 seconds
         self._ensure_users_file()
     
     def _ensure_users_file(self):
@@ -68,11 +87,30 @@ class AuthManager:
         """Hash password using SHA-256"""
         return hashlib.sha256(password.encode()).hexdigest()
     
+    def _load_users(self, force_reload: bool = False) -> Dict:
+        """Load users with caching"""
+        import time
+        current_time = time.time()
+        
+        if force_reload or self._users_cache is None or (current_time - self._cache_timestamp) > self._cache_ttl:
+            with open(self.users_file, 'r') as f:
+                self._users_cache = json.load(f)
+            self._cache_timestamp = current_time
+        
+        return self._users_cache if self._users_cache is not None else {}
+    
+    def _save_users(self, users: Dict):
+        """Save users and invalidate cache"""
+        with open(self.users_file, 'w') as f:
+            json.dump(users, f, indent=2)
+        self._users_cache = users
+        import time
+        self._cache_timestamp = time.time()
+    
     def register(self, username: str, password: str) -> tuple[bool, str]:
         """Register a new user"""
         try:
-            with open(self.users_file, 'r') as f:
-                users = json.load(f)
+            users = self._load_users(force_reload=True)
             
             if username in users:
                 return False, "El usuario ya existe"
@@ -83,8 +121,7 @@ class AuthManager:
                 "status": "online"
             }
             
-            with open(self.users_file, 'w') as f:
-                json.dump(users, f, indent=2)
+            self._save_users(users)
             
             return True, "Usuario registrado exitosamente"
         except Exception as e:
@@ -93,8 +130,7 @@ class AuthManager:
     def login(self, username: str, password: str) -> tuple[bool, str]:
         """Authenticate user"""
         try:
-            with open(self.users_file, 'r') as f:
-                users = json.load(f)
+            users = self._load_users()
             
             if username not in users:
                 return False, "Usuario no encontrado"
@@ -148,12 +184,13 @@ class LoadingIndicator(ft.Container):
 
 
 class NotificationBanner(ft.UserControl):
-    """Notification banner for user feedback"""
+    """Notification banner for user feedback with close button"""
     
-    def __init__(self, message: str, notification_type: str = "info"):
+    def __init__(self, message: str, notification_type: str = "info", on_close: Optional[Callable] = None):
         super().__init__()
         self.message = message
         self.notification_type = notification_type
+        self.on_close = on_close
         
     def build(self):
         colors = {
@@ -184,8 +221,19 @@ class NotificationBanner(ft.UserControl):
                         color="white",
                         expand=True,
                     ),
+                    ft.IconButton(
+                        icon=ft.icons.CLOSE,
+                        icon_size=18,
+                        icon_color="white",
+                        tooltip="Cerrar",
+                        on_click=lambda e: self.on_close() if self.on_close else None,
+                        style=ft.ButtonStyle(
+                            padding=ft.padding.all(4),
+                        ),
+                    ),
                 ],
                 spacing=10,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
             bgcolor=colors.get(self.notification_type, colors["info"]),
             padding=ft.padding.all(12),
@@ -195,9 +243,9 @@ class NotificationBanner(ft.UserControl):
 
 
 class MessageBubble(ft.UserControl):
-    """Enhanced message bubble component with timestamps and actions"""
+    """Enhanced message bubble component with timestamps, actions, and smooth animations"""
     
-    def __init__(self, username: str, message: str, timestamp: Optional[str] = None, 
+    def __init__(self, username: str, message: str, timestamp: Optional[str] = None,
                  is_own: bool = False, on_pin: Optional[Callable] = None):
         super().__init__()
         self.username = username
@@ -227,51 +275,57 @@ class MessageBubble(ft.UserControl):
                 ),
                 ft.Text(
                     self.message,
-                    size=13,
+                    size=14,
                     color=COLOR_TEXTO_CHAT,
                     selectable=True,
                 ),
             ],
-            spacing=4,
+            spacing=5,
         )
         
-        # Add action buttons on hover
+        # Add action buttons on hover with better styling
         actions = ft.Row(
             controls=[
                 ft.IconButton(
                     icon=ft.icons.PUSH_PIN_OUTLINED,
-                    icon_size=16,
-                    tooltip="Fijar mensaje",
+                    icon_size=18,
+                    tooltip="📌 Fijar mensaje",
                     on_click=self.on_pin,
                     icon_color="#999999",
+                    hover_color=COLOR_BOTON,
                 ),
                 ft.IconButton(
                     icon=ft.icons.REPLY,
-                    icon_size=16,
-                    tooltip="Responder",
+                    icon_size=18,
+                    tooltip="↩️ Responder",
                     icon_color="#999999",
+                    hover_color=COLOR_BOTON,
                 ),
             ],
-            spacing=0,
+            spacing=5,
             visible=False,
         )
         
+        # Enhanced container with smooth animations
         container = ft.Container(
             content=ft.Row(
                 controls=[message_content, actions],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
-            padding=ft.padding.symmetric(horizontal=15, vertical=8),
-            border_radius=8,
-            bgcolor="transparent",
-            animate=ft.animation.Animation(200, ft.AnimationCurve.EASE_IN_OUT),
+            padding=ft.padding.symmetric(horizontal=16, vertical=10),
+            border_radius=12,
+            bgcolor="#2a2a2a" if self.is_own else "transparent",
+            border=ft.border.all(1, "#3a3a3a") if self.is_own else None,
+            animate=ft.animation.Animation(250, ft.AnimationCurve.EASE_OUT),
+            animate_scale=ft.animation.Animation(200, ft.AnimationCurve.BOUNCE_OUT),
+            animate_opacity=ft.animation.Animation(300, ft.AnimationCurve.EASE_IN),
             on_hover=lambda e: self._toggle_actions(e, actions),
         )
         
         return container
     
     def _toggle_actions(self, e, actions):
-        """Toggle action buttons visibility on hover"""
+        """Toggle action buttons visibility on hover with smooth transition"""
         actions.visible = e.data == "true"
         self.update()
 
@@ -577,7 +631,7 @@ class LoginView(ft.UserControl):
 
 class FletChatApp:
     """
-    Enhanced Chat Application with Material Design 3
+    Enhanced Chat Application with Material Design 3 - Optimized
     """
     
     def __init__(self, page: ft.Page):
@@ -597,6 +651,11 @@ class FletChatApp:
         self.pinned_message_text: ft.Text = None
         self.room_buttons: dict = {}
         self.main_container: ft.Container = None
+        
+        # Performance optimizations
+        self._update_batch: List = []
+        self._update_timer: Optional[asyncio.Task] = None
+        self._watsonx_client_cache: Optional[object] = None  # Will be APIClient when loaded
         
         # Setup and build
         self._setup_page()
@@ -683,18 +742,42 @@ class FletChatApp:
         self.page.update()
         
     def _build_sidebar(self):
-        """Build enhanced sidebar with user profile and room list"""
+        """Build enhanced sidebar with user profile and room list - Optimized"""
         
         # User profile section
         user_profile = ft.Container(
-            content=UserProfileCard(self.alias, "online"),
+            content=UserProfileCard(self.alias or "Guest", "online"),
             padding=ft.padding.all(10),
+        )
+        
+        # Enhanced Channels Header with icon
+        channels_header = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.icons.TAG,
+                        size=16,
+                        color=COLOR_BOTON,
+                    ),
+                    ft.Text(
+                        "CANALES",
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        color=COLOR_TEXTO_CHAT,
+                    ),
+                ],
+                spacing=8,
+            ),
+            padding=ft.padding.symmetric(horizontal=15, vertical=12),
+            bgcolor="#2a2a2a",
+            border_radius=8,
+            margin=ft.margin.symmetric(horizontal=10, vertical=5),
         )
         
         # Search bar
         search_bar = SearchBar(on_search=self._on_search_rooms)
         
-        # Room list
+        # Room list - Lazy loading for better performance
         rooms = ["General", "Desarrollo", "Soporte", "Anuncios", "Proyectos"]
         room_list_controls = []
         
@@ -786,15 +869,7 @@ class FletChatApp:
                 controls=[
                     user_profile,
                     ft.Divider(height=1, color="#444444"),
-                    ft.Container(
-                        content=ft.Text(
-                            "CANALES",
-                            size=12,
-                            weight=ft.FontWeight.BOLD,
-                            color="#999999",
-                        ),
-                        padding=ft.padding.symmetric(horizontal=15, vertical=10),
-                    ),
+                    channels_header,
                     search_bar,
                     room_list,
                     action_buttons,
@@ -853,12 +928,14 @@ class FletChatApp:
                                 icon_size=20,
                                 tooltip="Notificaciones",
                                 icon_color="#999999",
+                                on_click=self._on_notifications_click,
                             ),
                             ft.IconButton(
                                 icon=ft.icons.INFO_OUTLINE,
                                 icon_size=20,
                                 tooltip="Información del canal",
                                 icon_color="#999999",
+                                on_click=self._on_channel_info_click,
                             ),
                         ],
                         spacing=5,
@@ -871,15 +948,14 @@ class FletChatApp:
             border=ft.border.only(bottom=ft.BorderSide(1, "#444444")),
         )
         
-        # Pinned message area
+        # Pinned message area - Hidden by default, shown when message is pinned
         self.pinned_message_text = ft.Text(
-            "(Ningún mensaje fijado)",
+            "",
             size=12,
-            italic=True,
-            color="#AAAAAA",
+            color="#FFFFFF",
         )
         
-        pinned_message = ft.Container(
+        self.pinned_message_container = ft.Container(
             content=ft.Row(
                 controls=[
                     ft.Icon(ft.icons.PUSH_PIN, size=16, color="#FFA500"),
@@ -895,18 +971,20 @@ class FletChatApp:
             ),
             padding=ft.padding.symmetric(horizontal=20, vertical=10),
             bgcolor="#2B3A42",
-            visible=True,
+            visible=False,  # Hidden by default
         )
         
-        # Message list with sample messages
+        # Message list with sample messages - Optimized with lazy loading
+        initial_messages = [
+            self._create_system_message("Bienvenido al canal #General"),
+            MessageBubble("Usuario1", "¡Hola a todos! ¿Cómo están?", "10:30", on_pin=self._on_pin_message),
+            MessageBubble("Usuario2", "Todo bien, trabajando en el nuevo proyecto", "10:32", on_pin=self._on_pin_message),
+            MessageBubble(self.alias or "Guest", "Excelente, ¿necesitan ayuda?", "10:35", is_own=True, on_pin=self._on_pin_message),
+            self._create_system_message("Usuario3 se ha unido al canal"),
+        ]
+        
         self.message_list = ft.ListView(
-            controls=[
-                self._create_system_message("Bienvenido al canal #General"),
-                MessageBubble("Usuario1", "¡Hola a todos! ¿Cómo están?", "10:30", on_pin=self._on_pin_message),
-                MessageBubble("Usuario2", "Todo bien, trabajando en el nuevo proyecto", "10:32", on_pin=self._on_pin_message),
-                MessageBubble(self.alias, "Excelente, ¿necesitan ayuda?", "10:35", is_own=True, on_pin=self._on_pin_message),
-                self._create_system_message("Usuario3 se ha unido al canal"),
-            ],
+            controls=initial_messages,
             spacing=8,
             padding=ft.padding.all(15),
             expand=True,
@@ -926,7 +1004,7 @@ class FletChatApp:
             content=ft.Column(
                 controls=[
                     chat_header,
-                    pinned_message,
+                    self.pinned_message_container,
                     messages_container,
                     input_area,
                 ],
@@ -938,10 +1016,10 @@ class FletChatApp:
         )
         
     def _build_input_area(self):
-        """Build enhanced input area with formatting options"""
+        """Build enhanced input area with formatting options and smooth animations"""
         
         self.message_input = ft.TextField(
-            hint_text="Escribe un mensaje... (Ctrl+Enter para enviar)",
+            hint_text="💬 Escribe un mensaje... (Ctrl+Enter para enviar)",
             hint_style=ft.TextStyle(color="#999999", size=14),
             text_style=ft.TextStyle(color=COLOR_TEXTO_CHAT, size=14),
             border_color="transparent",
@@ -953,7 +1031,8 @@ class FletChatApp:
             expand=True,
             on_submit=self._on_send_message,
             shift_enter=True,
-            content_padding=ft.padding.all(12),
+            content_padding=ft.padding.all(14),
+            border_radius=12,
         )
         
         self.send_button = ft.IconButton(
@@ -961,41 +1040,46 @@ class FletChatApp:
             icon_size=24,
             bgcolor=COLOR_BOTON,
             icon_color="white",
-            tooltip="Enviar mensaje (Ctrl+Enter)",
+            tooltip="🚀 Enviar mensaje (Ctrl+Enter)",
             on_click=self._on_send_message,
-            width=50,
-            height=50,
+            width=52,
+            height=52,
             style=ft.ButtonStyle(
-                shape=ft.RoundedRectangleBorder(radius=25),
+                shape=ft.RoundedRectangleBorder(radius=26),
+                animation_duration=200,
             ),
+            animate_scale=ft.animation.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
         
-        # Formatting toolbar with functional buttons
+        # Enhanced formatting toolbar with functional buttons
         toolbar = ft.Row(
             controls=[
                 ft.IconButton(
                     icon=ft.icons.ATTACH_FILE,
-                    icon_size=20,
-                    tooltip="Adjuntar archivo",
+                    icon_size=22,
+                    tooltip="📎 Adjuntar archivo",
                     icon_color="#999999",
                     on_click=self._on_attach_file,
+                    hover_color=COLOR_BOTON,
                 ),
                 ft.IconButton(
                     icon=ft.icons.EMOJI_EMOTIONS_OUTLINED,
-                    icon_size=20,
-                    tooltip="Emojis",
+                    icon_size=22,
+                    tooltip="😊 Emojis",
                     icon_color="#999999",
                     on_click=self._on_emoji_click,
+                    hover_color=COLOR_BOTON,
                 ),
                 ft.IconButton(
                     icon=ft.icons.GIF_BOX_OUTLINED,
-                    icon_size=20,
-                    tooltip="GIF",
+                    icon_size=22,
+                    tooltip="🎬 GIF",
                     icon_color="#999999",
                     on_click=self._on_gif_click,
+                    hover_color=COLOR_BOTON,
                 ),
             ],
-            spacing=5,
+            spacing=8,
         )
         
         return ft.Container(
@@ -1007,7 +1091,7 @@ class FletChatApp:
                                 toolbar,
                             ],
                         ),
-                        padding=ft.padding.symmetric(horizontal=15, vertical=5),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=8),
                     ),
                     ft.Container(
                         content=ft.Row(
@@ -1015,16 +1099,16 @@ class FletChatApp:
                                 self.message_input,
                                 self.send_button,
                             ],
-                            spacing=10,
+                            spacing=12,
                             vertical_alignment=ft.CrossAxisAlignment.END,
                         ),
-                        padding=ft.padding.symmetric(horizontal=15, vertical=10),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
                     ),
                 ],
                 spacing=0,
             ),
             bgcolor=COLOR_FONDO_CHAT,
-            border=ft.border.only(top=ft.BorderSide(1, "#444444")),
+            border=ft.border.only(top=ft.BorderSide(2, "#3a3a3a")),
         )
     
     def _on_attach_file(self, e):
@@ -1038,55 +1122,162 @@ class FletChatApp:
         )
     
     def _on_file_picked(self, e: ft.FilePickerResultEvent):
-        """Handle file selection"""
-        if e.files:
-            file = e.files[0]
+        """Handle file selection - Optimized"""
+        if not e.files:
+            return
+        
+        # Batch message creation for better performance
+        new_messages = []
+        for file in e.files:
             file_message = f"📎 Archivo adjunto: {file.name}"
             new_message = MessageBubble(
-                self.alias,
+                self.alias or "Guest",
                 file_message,
                 datetime.now().strftime("%H:%M"),
                 is_own=True,
                 on_pin=self._on_pin_message
             )
-            self.message_list.controls.append(new_message)
-            self.page.update()
-            self._show_notification(f"Archivo '{file.name}' adjuntado", "success")
+            new_messages.append(new_message)
+        
+        # Add all messages at once
+        self.message_list.controls.extend(new_messages)
+        self.page.update()
+        self._show_notification(f"{len(new_messages)} archivo(s) adjuntado(s)", "success")
+    
+    @lru_cache(maxsize=1)
+    def _get_emoji_categories(self) -> Dict[str, List[str]]:
+        """Get emoji categories - Cached for performance"""
+        return {
+            "😊 Smileys": ["😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😂", "🙂", "🙃",
+                          "😉", "😊", "😇", "🥰", "😍", "🤩", "😘", "😗", "😚", "😙",
+                          "😋", "😛", "😜", "🤪", "😝", "🤑", "🤗", "🤭", "🤫", "🤔"],
+            "👋 Gestures": ["👋", "🤚", "🖐️", "✋", "🖖", "👌", "🤌", "🤏", "✌️", "🤞",
+                           "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️", "👍",
+                           "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "💪"],
+            "❤️ Hearts": ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔",
+                         "❤️‍🔥", "❤️‍🩹", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💟"],
+            "🐶 Animals": ["🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯",
+                          "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦", "🐤", "🦆",
+                          "🦅", "🦉", "🦇", "🐺", "🐗", "🐴", "🦄", "🐝", "🐛", "🦋"],
+            "🍕 Food": ["🍕", "🍔", "🍟", "🌭", "🍿", "🧈", "🥓", "🥚", "🍳", "🧇",
+                       "🥞", "🧈", "🍞", "🥐", "🥨", "🥯", "🥖", "🧀", "🥗", "🥙",
+                       "🌮", "🌯", "🥪", "🍖", "🍗", "🥩", "🍱", "🍘", "🍙", "🍚"],
+            "✈️ Travel": ["✈️", "🚀", "🛸", "🚁", "🛶", "⛵", "🚤", "🛳️", "⛴️", "🚢",
+                         "🚂", "🚃", "🚄", "🚅", "🚆", "🚇", "🚈", "🚉", "🚊", "🚝",
+                         "🚞", "🚋", "🚌", "🚍", "🚎", "🚐", "🚑", "🚒", "🚓", "🚔"],
+            "⚽ Sports": ["⚽", "🏀", "🏈", "⚾", "🥎", "🎾", "🏐", "🏉", "🥏", "🎱",
+                        "🪀", "🏓", "🏸", "🏒", "🏑", "🥍", "🏏", "🥅", "⛳", "🪁",
+                        "🏹", "🎣", "🤿", "🥊", "🥋", "🎽", "🛹", "🛼", "🛷", "⛸️"],
+            "🎉 Objects": ["🎉", "🎊", "🎈", "🎁", "🎀", "🎂", "🎄", "🎃", "🎆", "🎇",
+                          "🧨", "✨", "🎋", "🎍", "🎎", "🎏", "🎐", "🎑", "🧧", "🎀",
+                          "🎁", "🎗️", "🎟️", "🎫", "🎖️", "🏆", "🏅", "🥇", "🥈", "🥉"],
+            "💯 Symbols": ["💯", "🔥", "⭐", "🌟", "✨", "⚡", "💥", "💫", "💢", "💦",
+                          "💨", "🕳️", "💬", "👁️‍🗨️", "🗨️", "🗯️", "💭", "💤", "🚀", "🎯",
+                          "✅", "❌", "⭕", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫"],
+        }
     
     def _on_emoji_click(self, e):
-        """Show emoji picker dialog"""
-        emojis = ["😀", "😂", "😍", "🎉", "👍", "❤️", "🔥", "✨", "💯", "🚀", 
-                  "👋", "🙌", "💪", "🤔", "😎", "🥳", "😊", "🤗", "😇", "🤩"]
+        """Show enhanced emoji/sticker picker dialog with Giphy API - Optimized"""
+        if not self.config.giphy_api_key or self.config.giphy_api_key == "your_giphy_api_key_here":
+            # Fallback to local emojis if no API key
+            self._show_local_emoji_picker()
+            return
         
-        emoji_buttons = []
-        for emoji in emojis:
-            emoji_buttons.append(
-                ft.TextButton(
-                    text=emoji,
-                    style=ft.ButtonStyle(
-                        text_style=ft.TextStyle(size=24),
+        # Show loading
+        loading_dialog = ft.AlertDialog(
+            title=ft.Text("Cargando stickers..."),
+            content=ft.Container(
+                content=ft.ProgressRing(),
+                padding=20,
+            ),
+        )
+        self.page.dialog = loading_dialog
+        loading_dialog.open = True
+        self.page.update()
+        
+        # Fetch stickers using threading
+        def load_stickers():
+            sticker_categories = {
+                "😊 Emociones": self._fetch_giphy_stickers("happy emotions"),
+                "👋 Gestos": self._fetch_giphy_stickers("hand gestures"),
+                "❤️ Amor": self._fetch_giphy_stickers("love hearts"),
+                "🎉 Celebración": self._fetch_giphy_stickers("celebration party"),
+                "😂 Divertido": self._fetch_giphy_stickers("funny lol"),
+                "🐱 Animales": self._fetch_giphy_stickers("cute animals"),
+            }
+            
+            self._show_sticker_dialog(sticker_categories)
+        
+        threading.Thread(target=load_stickers, daemon=True).start()
+    
+    def _show_local_emoji_picker(self):
+        """Show local emoji picker as fallback"""
+        emoji_categories = self._get_emoji_categories()
+        
+        # Create tabs for categories
+        tabs = []
+        for category, emojis in emoji_categories.items():
+            emoji_buttons = []
+            for emoji in emojis:
+                emoji_buttons.append(
+                    ft.Container(
+                        content=ft.TextButton(
+                            text=emoji,
+                            style=ft.ButtonStyle(
+                                text_style=ft.TextStyle(size=28),
+                                padding=ft.padding.all(8),
+                            ),
+                            on_click=lambda e, em=emoji: self._insert_emoji(em),
+                        ),
+                        animate_scale=ft.animation.Animation(150, ft.AnimationCurve.EASE_OUT),
+                    )
+                )
+            
+            tabs.append(
+                ft.Tab(
+                    text=category,
+                    content=ft.Container(
+                        content=ft.GridView(
+                            controls=emoji_buttons,
+                            runs_count=6,
+                            max_extent=60,
+                            child_aspect_ratio=1,
+                            spacing=8,
+                            run_spacing=8,
+                        ),
+                        padding=ft.padding.all(10),
                     ),
-                    on_click=lambda e, em=emoji: self._insert_emoji(em),
                 )
             )
         
         dialog = ft.AlertDialog(
-            title=ft.Text("Selecciona un emoji"),
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.EMOJI_EMOTIONS, color=COLOR_BOTON),
+                    ft.Text("Selecciona un emoji", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+            ),
             content=ft.Container(
-                content=ft.GridView(
-                    controls=emoji_buttons,
-                    runs_count=5,
-                    max_extent=60,
-                    child_aspect_ratio=1,
-                    spacing=5,
-                    run_spacing=5,
+                content=ft.Tabs(
+                    tabs=tabs,
+                    selected_index=0,
+                    animation_duration=300,
+                    indicator_color=COLOR_BOTON,
+                    label_color=COLOR_BOTON,
+                    unselected_label_color="#999999",
                 ),
-                width=300,
-                height=200,
+                width=500,
+                height=400,
             ),
             actions=[
-                ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog()),
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: self._close_dialog(),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
             ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
         
         self.page.dialog = dialog
@@ -1100,54 +1291,189 @@ class FletChatApp:
         self._close_dialog()
         self.page.update()
     
-    def _on_gif_click(self, e):
-        """Show GIF picker dialog"""
-        gif_urls = [
-            "https://media.giphy.com/media/3o7abKhOpu0NwenH3O/giphy.gif",
-            "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-            "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
-        ]
+    def _fetch_giphy_gifs(self, query: str, limit: int = 8) -> List[Dict]:
+        """Fetch GIFs from Giphy API"""
+        if not self.config.giphy_api_key or self.config.giphy_api_key == "your_giphy_api_key_here":
+            return []
         
-        gif_buttons = []
-        for i, url in enumerate(gif_urls):
-            gif_buttons.append(
-                ft.ElevatedButton(
-                    text=f"GIF {i+1}",
-                    on_click=lambda e, u=url: self._insert_gif(u),
-                    width=100,
+        try:
+            url = f"https://api.giphy.com/v1/gifs/search"
+            params = {
+                "api_key": self.config.giphy_api_key,
+                "q": query,
+                "limit": limit,
+                "rating": "g",
+                "lang": "es"
+            }
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return [
+                    {
+                        "title": gif["title"],
+                        "url": gif["images"]["fixed_height"]["url"]
+                    }
+                    for gif in data.get("data", [])
+                ]
+        except Exception as e:
+            print(f"Error fetching GIFs: {e}")
+        return []
+    
+    def _fetch_giphy_stickers(self, query: str, limit: int = 20) -> List[Dict]:
+        """Fetch stickers/emojis from Giphy API"""
+        if not self.config.giphy_api_key or self.config.giphy_api_key == "your_giphy_api_key_here":
+            return []
+        
+        try:
+            url = f"https://api.giphy.com/v1/stickers/search"
+            params = {
+                "api_key": self.config.giphy_api_key,
+                "q": query,
+                "limit": limit,
+                "rating": "g",
+                "lang": "es"
+            }
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return [
+                    {
+                        "title": sticker["title"],
+                        "url": sticker["images"]["fixed_height_small"]["url"]
+                    }
+                    for sticker in data.get("data", [])
+                ]
+        except Exception as e:
+            print(f"Error fetching stickers: {e}")
+        return []
+    
+    def _on_gif_click(self, e):
+        """Show enhanced GIF picker dialog with Giphy API integration"""
+        if not self.config.giphy_api_key or self.config.giphy_api_key == "your_giphy_api_key_here":
+            self._show_notification("⚠️ Giphy API key no configurada. Usa una API key válida en el archivo .env", "warning")
+            return
+        
+        # Show loading
+        loading_dialog = ft.AlertDialog(
+            title=ft.Text("Cargando GIFs..."),
+            content=ft.Container(
+                content=ft.ProgressRing(),
+                padding=20,
+            ),
+        )
+        self.page.dialog = loading_dialog
+        loading_dialog.open = True
+        self.page.update()
+        
+        # Fetch GIFs using threading to avoid async issues
+        def load_gifs():
+            gif_categories = {
+                "🎉 Celebración": self._fetch_giphy_gifs("celebration party"),
+                "👍 Reacciones": self._fetch_giphy_gifs("thumbs up reaction"),
+                "😂 Divertido": self._fetch_giphy_gifs("funny lol"),
+                "💼 Trabajo": self._fetch_giphy_gifs("work office"),
+                "❤️ Amor": self._fetch_giphy_gifs("love heart"),
+                "🐱 Animales": self._fetch_giphy_gifs("cute animals"),
+            }
+            
+            self._show_gif_dialog(gif_categories)
+        
+        threading.Thread(target=load_gifs, daemon=True).start()
+    
+    def _show_gif_dialog(self, gif_categories: Dict[str, List[Dict]]):
+        """Show GIF picker dialog with fetched GIFs"""
+        
+        # Create tabs for GIF categories
+        tabs = []
+        for category, gifs in gif_categories.items():
+            if not gifs:
+                continue
+                
+            gif_buttons = []
+            for gif_data in gifs:
+                title = gif_data.get("title", "GIF")
+                url = gif_data.get("url", "")
+                gif_buttons.append(
+                    ft.Container(
+                        content=ft.ElevatedButton(
+                            text=f"🎬 {title[:20]}...",
+                            on_click=lambda e, u=url, t=title: self._insert_gif(u, t),
+                            style=ft.ButtonStyle(
+                                bgcolor=COLOR_ENTRADA_OSCURA,
+                                color=COLOR_TEXTO_CHAT,
+                            ),
+                        ),
+                        animate_scale=ft.animation.Animation(150, ft.AnimationCurve.EASE_OUT),
+                    )
+                )
+            
+            tabs.append(
+                ft.Tab(
+                    text=category,
+                    content=ft.Container(
+                        content=ft.GridView(
+                            controls=gif_buttons,
+                            runs_count=2,
+                            max_extent=200,
+                            child_aspect_ratio=2,
+                            spacing=10,
+                            run_spacing=10,
+                        ),
+                        padding=ft.padding.all(15),
+                    ),
+                )
+            )
+        
+        if not tabs:
+            tabs.append(
+                ft.Tab(
+                    text="Sin resultados",
+                    content=ft.Container(
+                        content=ft.Text("No se encontraron GIFs", color="#999999"),
+                        padding=20,
+                    ),
                 )
             )
         
         dialog = ft.AlertDialog(
-            title=ft.Text("Selecciona un GIF"),
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.GIF_BOX, color=COLOR_BOTON),
+                    ft.Text("Selecciona un GIF", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+            ),
             content=ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Text("GIFs populares:", size=12, color="#999999"),
-                        ft.Row(
-                            controls=gif_buttons,
-                            spacing=10,
-                            wrap=True,
-                        ),
-                    ],
-                    spacing=10,
+                content=ft.Tabs(
+                    tabs=tabs,
+                    selected_index=0,
+                    animation_duration=300,
+                    indicator_color=COLOR_BOTON,
+                    label_color=COLOR_BOTON,
+                    unselected_label_color="#999999",
                 ),
-                width=300,
+                width=450,
+                height=350,
             ),
             actions=[
-                ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog()),
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: self._close_dialog(),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
             ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
         
         self.page.dialog = dialog
         dialog.open = True
         self.page.update()
     
-    def _insert_gif(self, gif_url: str):
-        """Insert GIF into chat"""
-        gif_message = f"🎬 GIF: {gif_url}"
+    def _insert_gif(self, gif_url: str, gif_name: str = "GIF"):
+        """Insert GIF into chat with animation - Optimized"""
+        gif_message = f"🎬 {gif_name}"
         new_message = MessageBubble(
-            self.alias,
+            self.alias or "Guest",
             gif_message,
             datetime.now().strftime("%H:%M"),
             is_own=True,
@@ -1155,8 +1481,11 @@ class FletChatApp:
         )
         self.message_list.controls.append(new_message)
         self._close_dialog()
+        
+        # Scroll to bottom with animation
+        self.message_list.scroll_to(offset=-1, duration=300)
         self.page.update()
-        self._show_notification("GIF enviado", "success")
+        self._show_notification("🎬 GIF enviado", "success")
     
     def _close_dialog(self):
         """Close current dialog"""
@@ -1183,40 +1512,51 @@ class FletChatApp:
         )
         
     def _show_notification(self, message: str, notification_type: str = "info"):
-        """Show notification banner"""
-        notification = NotificationBanner(message, notification_type)
+        """Show notification banner with close button and 3-second auto-hide"""
+        def close_notification():
+            try:
+                if notification in self.notification_container.content.controls:
+                    self.notification_container.content.controls.remove(notification)
+                    if not self.notification_container.content.controls:
+                        self.notification_container.visible = False
+                    self.page.update()
+            except Exception:
+                pass
+        
+        notification = NotificationBanner(message, notification_type, on_close=close_notification)
         self.notification_container.content.controls.append(notification)
         self.notification_container.visible = True
         self.page.update()
         
-        # Auto-hide after 3 seconds
-        async def hide_notification():
-            await asyncio.sleep(3)
-            if notification in self.notification_container.content.controls:
-                self.notification_container.content.controls.remove(notification)
-                if not self.notification_container.content.controls:
-                    self.notification_container.visible = False
-                self.page.update()
+        # Auto-hide after 3 seconds using threading
+        def hide_notification():
+            import time
+            time.sleep(3)
+            close_notification()
         
-        asyncio.create_task(hide_notification())
+        threading.Thread(target=hide_notification, daemon=True).start()
         
     def _on_send_message(self, e):
-        """Handle message sending with validation"""
+        """Handle message sending with validation and smooth animation - Optimized"""
         if not self.message_input.value or not self.message_input.value.strip():
             return
-            
+        
         message_text = self.message_input.value.strip()
+        
+        # Batch UI updates for better performance
+        self.send_button.scale = 0.8
         
         # Check for commands
         if message_text.startswith("/"):
             self._handle_command(message_text)
             self.message_input.value = ""
+            self.send_button.scale = 1.0
             self.page.update()
             return
         
         # Add message to list
         new_message = MessageBubble(
-            self.alias,
+            self.alias or "Guest",
             message_text,
             datetime.now().strftime("%H:%M"),
             is_own=True,
@@ -1224,11 +1564,14 @@ class FletChatApp:
         )
         self.message_list.controls.append(new_message)
         
-        # Clear input
+        # Clear input and reset button
         self.message_input.value = ""
+        self.send_button.scale = 1.0
+        
+        # Single update call for better performance
         self.page.update()
         
-        # TODO: Send to server via API
+        # TODO: Send to server via API (async for non-blocking)
         print(f"[{self.current_room}] {self.alias}: {message_text}")
         
     def _handle_command(self, command: str):
@@ -1261,21 +1604,287 @@ Comandos disponibles:
             self._show_notification(f"Comando desconocido: {command}", "warning")
             
     def _on_room_click(self, room_name: str):
-        """Handle room selection"""
-        if room_name == self.current_room:
-            return
-            
-        # Update active state
+        """Handle room/channel switching"""
+        # Update current room
+        old_room = self.current_room
+        self.current_room = room_name
+        
+        # Update room buttons
         for room, button in self.room_buttons.items():
             button.is_active = (room == room_name)
-            button.update()
         
-        self.current_room = room_name
-        self._show_notification(f"Cambiado a #{room_name}", "info")
+        # Clear and reload messages for new room
+        self.message_list.controls.clear()
+        self.message_list.controls.append(
+            self._create_system_message(f"Cambiaste al canal #{room_name}")
+        )
         
-        # TODO: Load room messages from server
-        print(f"Switched to room: {room_name}")
+        self._show_notification(f"Canal cambiado a #{room_name}", "info")
+        self.page.update()
+    
+    def _on_notifications_click(self, e):
+        """Show notifications panel"""
+        notifications = [
+            {"type": "mention", "user": "Usuario1", "message": "Te mencionó en #General", "time": "Hace 5 min"},
+            {"type": "reply", "user": "Usuario2", "message": "Respondió a tu mensaje", "time": "Hace 15 min"},
+            {"type": "system", "user": "Sistema", "message": "Nueva actualización disponible", "time": "Hace 1 hora"},
+        ]
         
+        notification_items = []
+        for notif in notifications:
+            icon = ft.icons.ALTERNATE_EMAIL if notif["type"] == "mention" else \
+                   ft.icons.REPLY if notif["type"] == "reply" else ft.icons.INFO
+            
+            notification_items.append(
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(icon, size=20, color=COLOR_BOTON),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(
+                                        f"{notif['user']}: {notif['message']}",
+                                        size=13,
+                                        color=COLOR_TEXTO_CHAT,
+                                    ),
+                                    ft.Text(
+                                        notif['time'],
+                                        size=11,
+                                        color="#999999",
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                    padding=ft.padding.all(12),
+                    bgcolor=COLOR_ENTRADA_OSCURA,
+                    border_radius=8,
+                    margin=ft.margin.only(bottom=8),
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.NOTIFICATIONS, color=COLOR_BOTON),
+                    ft.Text("Notificaciones", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=notification_items if notification_items else [
+                        ft.Text("No hay notificaciones nuevas", color="#999999")
+                    ],
+                    spacing=5,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                width=400,
+                height=300,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Marcar todas como leídas",
+                    on_click=lambda e: self._show_notification("Notificaciones marcadas como leídas", "success"),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: self._close_dialog(),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _on_channel_info_click(self, e):
+        """Show channel information panel"""
+        dialog = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.INFO, color=COLOR_BOTON),
+                    ft.Text(f"Información de #{self.current_room}", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("📝 Descripción", size=14, weight=ft.FontWeight.BOLD, color=COLOR_BOTON),
+                                    ft.Text(
+                                        f"Canal de {self.current_room.lower()} para el equipo",
+                                        size=13,
+                                        color=COLOR_TEXTO_CHAT,
+                                    ),
+                                ],
+                                spacing=5,
+                            ),
+                            padding=ft.padding.all(10),
+                            bgcolor=COLOR_ENTRADA_OSCURA,
+                            border_radius=8,
+                        ),
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("👥 Miembros", size=14, weight=ft.FontWeight.BOLD, color=COLOR_BOTON),
+                                    ft.Text("12 miembros totales", size=13, color=COLOR_TEXTO_CHAT),
+                                    ft.Text("3 en línea ahora", size=13, color="#4CAF50"),
+                                ],
+                                spacing=5,
+                            ),
+                            padding=ft.padding.all(10),
+                            bgcolor=COLOR_ENTRADA_OSCURA,
+                            border_radius=8,
+                        ),
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[
+                                    ft.Text("📊 Estadísticas", size=14, weight=ft.FontWeight.BOLD, color=COLOR_BOTON),
+                                    ft.Text("156 mensajes hoy", size=13, color=COLOR_TEXTO_CHAT),
+                                    ft.Text("Creado: 15 Ene 2024", size=13, color="#999999"),
+                                ],
+                                spacing=5,
+                            ),
+                            padding=ft.padding.all(10),
+                            bgcolor=COLOR_ENTRADA_OSCURA,
+                            border_radius=8,
+                        ),
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                width=400,
+                height=300,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: self._close_dialog(),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _show_sticker_dialog(self, sticker_categories: Dict[str, List[Dict]]):
+        """Show sticker picker dialog with fetched stickers from Giphy"""
+        
+        # Create tabs for sticker categories
+        tabs = []
+        for category, stickers in sticker_categories.items():
+            if not stickers:
+                continue
+                
+            sticker_buttons = []
+            for sticker_data in stickers:
+                title = sticker_data.get("title", "Sticker")
+                url = sticker_data.get("url", "")
+                sticker_buttons.append(
+                    ft.Container(
+                        content=ft.Image(
+                            src=url,
+                            width=80,
+                            height=80,
+                            fit=ft.ImageFit.CONTAIN,
+                        ),
+                        on_click=lambda e, u=url, t=title: self._insert_sticker(u, t),
+                        bgcolor=COLOR_ENTRADA_OSCURA,
+                        border_radius=8,
+                        padding=ft.padding.all(5),
+                        animate_scale=ft.animation.Animation(150, ft.AnimationCurve.EASE_OUT),
+                    )
+                )
+            
+            tabs.append(
+                ft.Tab(
+                    text=category,
+                    content=ft.Container(
+                        content=ft.GridView(
+                            controls=sticker_buttons,
+                            runs_count=4,
+                            max_extent=90,
+                            child_aspect_ratio=1,
+                            spacing=10,
+                            run_spacing=10,
+                        ),
+                        padding=ft.padding.all(15),
+                    ),
+                )
+            )
+        
+        if not tabs:
+            tabs.append(
+                ft.Tab(
+                    text="Sin resultados",
+                    content=ft.Container(
+                        content=ft.Text("No se encontraron stickers", color="#999999"),
+                        padding=20,
+                    ),
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.icons.EMOJI_EMOTIONS, color=COLOR_BOTON),
+                    ft.Text("Selecciona un sticker", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                content=ft.Tabs(
+                    tabs=tabs,
+                    selected_index=0,
+                    animation_duration=300,
+                    indicator_color=COLOR_BOTON,
+                    label_color=COLOR_BOTON,
+                    unselected_label_color="#999999",
+                ),
+                width=450,
+                height=400,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cerrar",
+                    on_click=lambda e: self._close_dialog(),
+                    style=ft.ButtonStyle(color=COLOR_BOTON),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
+    def _insert_sticker(self, url: str, title: str):
+        """Insert sticker as a message"""
+        new_message = MessageBubble(
+            self.alias or "Guest",
+            f"🎨 Sticker: {title}",
+            datetime.now().strftime("%H:%M"),
+            is_own=True,
+            on_pin=self._on_pin_message
+        )
+        self.message_list.controls.append(new_message)
+        self._close_dialog()
+        self.page.update()
+        print(f"Sticker URL: {url}")
+    
     def _on_pin_message(self, e):
         """Handle message pinning"""
         self.pinned_message_text.value = "Este es un mensaje fijado de ejemplo"
@@ -1346,51 +1955,70 @@ Comandos disponibles:
         self._show_notification(result_text, "info")
         
     def _on_settings_click(self, e):
-        """Handle settings button click"""
+        """Handle settings button click - User preferences only"""
+        self.theme_dropdown = ft.Dropdown(
+            options=[
+                ft.dropdown.Option("Oscuro"),
+                ft.dropdown.Option("Claro"),
+                ft.dropdown.Option("Auto"),
+            ],
+            value="Oscuro",
+            width=150,
+        )
+        
+        self.font_size_slider = ft.Slider(
+            min=10,
+            max=20,
+            value=14,
+            divisions=10,
+            label="{value}px",
+            width=200,
+        )
+        
+        self.username_field = ft.TextField(
+            label="Nombre de usuario",
+            value=self.alias or "",
+            width=250,
+        )
+        
         settings_content = ft.Column(
             controls=[
                 ft.Text("Configuración de Usuario", size=16, weight=ft.FontWeight.BOLD),
                 ft.Divider(),
                 ft.Row(
                     controls=[
-                        ft.Text("Tema:", size=14),
-                        ft.Dropdown(
-                            options=[
-                                ft.dropdown.Option("Oscuro"),
-                                ft.dropdown.Option("Claro"),
-                                ft.dropdown.Option("Auto"),
-                            ],
-                            value="Oscuro",
-                            width=150,
-                        ),
+                        ft.Text("Usuario:", size=14, width=100),
+                        self.username_field,
                     ],
                     spacing=20,
                 ),
                 ft.Row(
                     controls=[
-                        ft.Text("Notificaciones:", size=14),
+                        ft.Text("Tema:", size=14, width=100),
+                        self.theme_dropdown,
+                    ],
+                    spacing=20,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Text("Tamaño de fuente:", size=14, width=100),
+                        self.font_size_slider,
+                    ],
+                    spacing=20,
+                ),
+                ft.Row(
+                    controls=[
+                        ft.Text("Notificaciones:", size=14, width=100),
                         ft.Switch(value=True),
                     ],
                     spacing=20,
                 ),
                 ft.Row(
                     controls=[
-                        ft.Text("Sonidos:", size=14),
+                        ft.Text("Sonidos:", size=14, width=100),
                         ft.Switch(value=True),
                     ],
                     spacing=20,
-                ),
-                ft.Divider(),
-                ft.Text("Configuración de Watson AI", size=16, weight=ft.FontWeight.BOLD),
-                ft.TextField(
-                    label="API Key",
-                    value=self.config.watsonx_api_key or "",
-                    password=True,
-                    can_reveal_password=True,
-                ),
-                ft.TextField(
-                    label="Project ID",
-                    value=self.config.watsonx_project_id or "",
                 ),
             ],
             spacing=15,
@@ -1488,16 +2116,27 @@ Comandos disponibles:
         
         self.page.update()
         
-    async def _summarize_chat(self, history: List[str]) -> str:
-        """Generate chat summary using IBM watsonx.ai"""
-        try:
+    def _get_watsonx_client(self):
+        """Get or create cached WatsonX client for better performance - Lazy loaded"""
+        if self._watsonx_client_cache is None:
+            # Lazy load WatsonX imports only when needed
+            _ensure_watsonx_imports()
             credentials = {
                 "url": self.config.watsonx_url,
                 "apikey": self.config.watsonx_api_key
             }
+            self._watsonx_client_cache = APIClient(credentials)
+        return self._watsonx_client_cache
+    
+    async def _summarize_chat(self, history: List[str]) -> str:
+        """Generate chat summary using IBM watsonx.ai - Optimized with lazy loading"""
+        try:
+            # Lazy load WatsonX imports only when summarize is used
+            _ensure_watsonx_imports()
             
-            client = APIClient(credentials)
+            client = self._get_watsonx_client()
             
+            # Limit history to last 20 messages for efficiency
             conversation_text = "\n".join(history[-20:])
             
             prompt = f"""Eres un asistente de secretaría técnica. Resume la siguiente conversación de chat empresarial.

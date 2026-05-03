@@ -45,14 +45,12 @@ RUN pip install --no-cache-dir -r requirements-client.txt
 # Copiar archivos del cliente
 COPY flet_app.py .
 COPY design_constants.py .
-COPY network_manager.py .
-COPY auth.py .
-COPY inter.jpg .
+COPY .env .
 
 # Exponer puerto para Flet web server
 EXPOSE 8550
 
 # Comando de inicio - Flet en modo web
-CMD ["python", "-m", "flet", "run", "--web", "--port", "8550", "flet_app.py"]
+CMD ["flet", "run", "--web", "--port", "8550", "flet_app.py"]
 
 # Made with Bob

@@ -1,159 +1,159 @@
 # watsonx.ai Troubleshooting Guide
 
-## 🔍 Problema: "La respuesta de watsonx.ai está vacía"
+## 🔍 Problem: "The watsonx.ai response is empty"
 
-### Diagnóstico Realizado
+### Diagnosis Performed
 
-El error ocurre cuando se ejecuta el comando `/scaffold API REST con Node.js y Express` y watsonx.ai devuelve una respuesta vacía.
+The error occurs when running the command `/scaffold API REST with Node.js and Express` and watsonx.ai returns an empty response.
 
-### 🎯 Causas Identificadas
+### 🎯 Identified Causes
 
-#### 1. **Ubicación del archivo .env** ✅ RESUELTO
-**Problema**: El archivo `.env` estaba en `IBM-Bob/config/.env` pero la aplicación lo buscaba en `IBM-Bob/.env`
+#### 1. **Location of the .env file** ✅ RESOLVED
+**Problem**: The `.env` file was in `IBM-Bob/config/.env` but the application looked for it in `IBM-Bob/.env`
 
-**Solución Aplicada**:
+**Applied Solution**:
 ```bash
 cd IBM-Bob && cp config/.env .env
 ```
 
-**Verificación**:
+**Verification**:
 ```bash
-# Debe existir en la raíz del proyecto IBM-Bob
+# It must exist at the root of the IBM-Bob project
 ls -la IBM-Bob/.env
 ```
 
-#### 2. **Modelo Incompatible** ✅ RESUELTO
-**Problema**: Se usaba `ibm/granite-8b-code-instruct` que puede no estar disponible o configurado
+#### 2. **Incompatible Model** ✅ RESOLVED
+**Problem**: `ibm/granite-8b-code-instruct` was used which may not be available or configured
 
-**Solución Aplicada**: 
-- Cambiado a `meta-llama/llama-3-3-70b-instruct` (línea 2468)
-- Este modelo es más confiable y está ampliamente disponible
+**Applied Solution**: 
+- Changed to `meta-llama/llama-3-3-70b-instruct` (line 2468)
+- This model is more reliable and widely available
 
-**Código Actualizado**:
+**Updated Code**:
 ```python
 model = ModelInference(
-    model_id="meta-llama/llama-3-3-70b-instruct",  # ✅ Modelo actualizado
+    model_id="meta-llama/llama-3-3-70b-instruct",  # ✅ Updated model
     api_client=client,
     project_id=self.config.watsonx_project_id,
     params={...}
 )
 ```
 
-#### 3. **Logging Insuficiente** ✅ RESUELTO
-**Problema**: No había visibilidad de qué estaba pasando internamente
+#### 3. **Insufficient Logging** ✅ RESOLVED
+**Problem**: There was no visibility into what was happening internally
 
-**Solución Aplicada**: Agregado logging detallado en cada paso:
+**Applied Solution**: Added detailed logging at each step:
 ```python
-print(f"✅ Modelo creado: meta-llama/llama-3-3-70b-instruct")
-print(f"🔄 Generando respuesta con watsonx.ai...")
-print(f"✅ Respuesta recibida. Tipo: {type(response)}")
-print(f"📊 Claves en respuesta: {list(response.keys())}")
-print(f"✅ Texto extraído: {len(response_text)} caracteres")
+print(f"✅ Model created: meta-llama/llama-3-3-70b-instruct")
+print(f"🔄 Generating response with watsonx.ai...")
+print(f"✅ Response received. Type: {type(response)}")
+print(f"📊 Keys in response: {list(response.keys())}")
+print(f"✅ Extracted text: {len(response_text)} characters")
 ```
 
-### 📋 Checklist de Verificación
+### 📋 Verification Checklist
 
-Antes de ejecutar el comando `/scaffold`, verifica:
+Before running the `/scaffold` command, verify:
 
-- [ ] **Archivo .env existe en IBM-Bob/.env**
+- [ ] **.env file exists in IBM-Bob/.env**
   ```bash
   cat IBM-Bob/.env | grep WATSONX
   ```
-  Debe mostrar:
+  It should show:
   ```
   WATSONX_API_KEY=M1m1ftQ1YieLC_BVmv0tU7qdjT7hxdbMdwJdxzkN1v45
   WATSONX_PROJECT_ID=3ee45f20-d971-43c7-b6c9-44c5a593ac96
   WATSONX_URL=https://us-south.ml.cloud.ibm.com/
   ```
 
-- [ ] **Credenciales válidas**
-  - API Key no expirada
-  - Project ID correcto
-  - URL correcta (us-south.ml.cloud.ibm.com)
+- [ ] **Valid credentials**
+  - API Key not expired
+  - Correct Project ID
+  - Correct URL (us-south.ml.cloud.ibm.com)
 
-- [ ] **Modelo actualizado**
-  - Línea 2468: `meta-llama/llama-3-3-70b-instruct`
-  - Línea 2330: `meta-llama/llama-3-3-70b-instruct`
+- [ ] **Model updated**
+  - Line 2468: `meta-llama/llama-3-3-70b-instruct`
+  - Line 2330: `meta-llama/llama-3-3-70b-instruct`
 
-- [ ] **Dependencias instaladas**
+- [ ] **Dependencies installed**
   ```bash
   pip list | grep ibm-watsonx-ai
   ```
-  Debe mostrar: `ibm-watsonx-ai`
+  Should show: `ibm-watsonx-ai`
 
-### 🧪 Prueba de Diagnóstico
+### 🧪 Diagnostic Test
 
-Ejecuta este comando para ver el logging detallado:
+Run this command to see detailed logging:
 
 ```bash
 cd IBM-Bob
 python src/client/flet_app.py
 ```
 
-Luego en la aplicación, ejecuta:
+Then in the application, run:
 ```
-/scaffold API REST con Node.js y Express
-```
-
-**Salida Esperada** (en consola):
-```
-✅ Modelo creado: meta-llama/llama-3-3-70b-instruct
-🔄 Generando respuesta con watsonx.ai...
-✅ Respuesta recibida. Tipo: <class 'dict'>
-📊 Claves en respuesta: ['results', 'model_id', 'created_at']
-📊 Resultados: 1 items
-✅ Texto extraído de results[0]: 1234 caracteres
-✅ Validación exitosa: 1234 caracteres
+/scaffold API REST with Node.js and Express
 ```
 
-**Si ves errores**:
+**Expected Output** (in console):
+```
+✅ Model created: meta-llama/llama-3-3-70b-instruct
+🔄 Generating response with watsonx.ai...
+✅ Response received. Type: <class 'dict'>
+📊 Keys in response: ['results', 'model_id', 'created_at']
+📊 Results: 1 items
+✅ Text extracted from results[0]: 1234 characters
+✅ Validation successful: 1234 characters
+```
 
-1. **"Error al crear modelo watsonx.ai"**
-   - Verifica API Key y Project ID
-   - Confirma que el modelo está disponible en tu región
+**If you see errors**:
 
-2. **"Error al generar proyecto"**
-   - Problema de red o timeout
-   - Verifica conectividad a us-south.ml.cloud.ibm.com
+1. **"Error creating watsonx.ai model"**
+   - Verify API Key and Project ID
+   - Confirm the model is available in your region
 
-3. **"Respuesta vacía detectada"**
-   - El modelo devolvió respuesta pero sin contenido
-   - Revisa el debug output: `📊 Debug - Respuesta completa: {...}`
+2. **"Error generating project"**
+   - Network or timeout issue
+   - Verify connectivity to us-south.ml.cloud.ibm.com
 
-### 🔧 Soluciones Adicionales
+3. **"Empty response detected"**
+   - The model returned a response but without content
+   - Check the debug output: `📊 Debug - Full response: {...}`
 
-#### Si el problema persiste:
+### 🔧 Additional Solutions
 
-1. **Verificar conectividad**:
+#### If the problem persists:
+
+1. **Verify connectivity**:
    ```bash
    curl -I https://us-south.ml.cloud.ibm.com
    ```
 
-2. **Probar con modelo alternativo**:
-   Edita línea 2468 en `flet_app.py`:
+2. **Try an alternative model**:
+   Edit line 2468 in `flet_app.py`:
    ```python
-   model_id="ibm/granite-3-1-8b-instruct"  # Modelo más pequeño
+   model_id="ibm/granite-3-1-8b-instruct"  # Smaller model
    ```
 
-3. **Aumentar timeout**:
-   Agrega en línea 2469:
+3. **Increase timeout**:
+   Add at line 2469:
    ```python
    params={
        GenParams.MAX_NEW_TOKENS: 2000,
        GenParams.TEMPERATURE: 0.3,
        GenParams.TOP_P: 0.85,
        GenParams.STOP_SEQUENCES: ["\n\n\n"],
-       GenParams.TIME_LIMIT: 60000,  # 60 segundos
+       GenParams.TIME_LIMIT: 60000,  # 60 seconds
    }
    ```
 
-4. **Verificar cuota de API**:
-   - Accede a IBM Cloud Console
-   - Verifica que no hayas excedido el límite de requests
+4. **Check API quota**:
+   - Access the IBM Cloud Console
+   - Verify you haven't exceeded the request limit
 
-### 📊 Estructura de Respuesta Esperada
+### 📊 Expected Response Structure
 
-watsonx.ai devuelve:
+watsonx.ai returns:
 ```python
 {
     "results": [
@@ -169,43 +169,43 @@ watsonx.ai devuelve:
 }
 ```
 
-El código extrae: `response["results"][0]["generated_text"]`
+The code extracts: `response["results"][0]["generated_text"]`
 
-### 🎯 Próximos Pasos
+### 🎯 Next Steps
 
-1. **Ejecuta la aplicación** con el .env en la ubicación correcta
-2. **Observa el logging** en la consola
-3. **Prueba el comando** `/scaffold API REST con Node.js y Express`
-4. **Reporta el output** si el problema persiste
+1. **Run the application** with the .env in the correct location
+2. **Watch the logging** in the console
+3. **Try the command** `/scaffold API REST with Node.js and Express`
+4. **Report the output** if the problem persists
 
-### 📝 Cambios Aplicados
+### 📝 Changes Applied
 
-| Archivo | Línea | Cambio |
-|---------|-------|--------|
-| `flet_app.py` | 2468 | Modelo: `ibm/granite-8b-code-instruct` → `meta-llama/llama-3-3-70b-instruct` |
-| `flet_app.py` | 2470-2530 | Agregado logging detallado en cada paso |
-| `flet_app.py` | 2470-2476 | Try-except granular para creación de modelo |
-| `IBM-Bob/.env` | - | Copiado desde `config/.env` |
+| File | Line | Change |
+|------|------|--------|
+| `flet_app.py` | 2468 | Model: `ibm/granite-8b-code-instruct` → `meta-llama/llama-3-3-70b-instruct` |
+| `flet_app.py` | 2470-2530 | Added detailed logging at each step |
+| `flet_app.py` | 2470-2476 | Granular try-except for model creation |
+| `IBM-Bob/.env` | - | Copied from `config/.env` |
 
-### ✅ Estado Actual
+### ✅ Current Status
 
-- ✅ Archivo .env en ubicación correcta
-- ✅ Modelo actualizado a versión estable
-- ✅ Logging detallado implementado
-- ✅ Error handling mejorado
-- ✅ Validación de respuesta robusta
+- ✅ .env file in correct location
+- ✅ Model updated to stable version
+- ✅ Detailed logging implemented
+- ✅ Improved error handling
+- ✅ Robust response validation
 
-### 🆘 Soporte
+### 🆘 Support
 
-Si después de seguir esta guía el problema persiste:
+If after following this guide the problem persists:
 
-1. Captura el output completo de la consola
-2. Verifica que las credenciales sean válidas en IBM Cloud
-3. Confirma que el proyecto tiene acceso al modelo `meta-llama/llama-3-3-70b-instruct`
-4. Revisa los logs de watsonx.ai en IBM Cloud Console
+1. Capture the full console output
+2. Verify that the credentials are valid in IBM Cloud
+3. Confirm the project has access to the model `meta-llama/llama-3-3-70b-instruct`
+4. Review watsonx.ai logs in the IBM Cloud Console
 
 ---
 
-**Última actualización**: 2026-05-03  
-**Versión**: 2.0  
-**Estado**: Fixes aplicados, pendiente de testing
+**Last updated**: 2026-05-03  
+**Version**: 2.0  
+**Status**: Fixes applied, testing pending

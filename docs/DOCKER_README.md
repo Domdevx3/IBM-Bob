@@ -1,145 +1,145 @@
-# 🐳 Guía de Despliegue con Docker
+# 🐳 Deployment Guide with Docker
 
-Esta guía te ayudará a desplegar el sistema de Chat Multi-Hilo usando Docker y Docker Compose en cualquier sistema operativo.
+This guide will help you deploy the Multi-Thread Chat system using Docker and Docker Compose on any operating system.
 
-## 📋 Requisitos Previos
+## 📋 Prerequisites
 
-- **Docker Desktop** (Windows/macOS) o **Docker Engine** (Linux)
+- **Docker Desktop** (Windows/macOS) or **Docker Engine** (Linux)
 - **Docker Compose** v2.0+
-- **Git Bash** (Windows) o terminal Unix (Linux/macOS)
-- Mínimo 4GB RAM disponible
-- (Opcional) GPU NVIDIA para aceleración de IA
+- **Git Bash** (Windows) or a Unix terminal (Linux/macOS)
+- At least 4GB RAM available
+- (Optional) NVIDIA GPU for AI acceleration
 
-## 🚀 Inicio Rápido
+## 🚀 Quick Start
 
-### 1. Generar Certificados SSL
+### 1. Generate SSL Certificates
 
-Antes de iniciar los contenedores, debes generar los certificados SSL:
+Before starting the containers, you must generate the SSL certificates:
 
-**En Linux/macOS:**
+**On Linux/macOS:**
 ```bash
 chmod +x generate_certs.sh
 ./generate_certs.sh
 ```
 
-**En Windows (Git Bash):**
+**On Windows (Git Bash):**
 ```bash
 bash generate_certs.sh
 ```
 
-**En Windows (PowerShell):**
+**On Windows (PowerShell):**
 ```powershell
-# Instalar OpenSSL si no lo tienes: https://slproweb.com/products/Win32OpenSSL.html
+# Install OpenSSL if you don't have it: https://slproweb.com/products/Win32OpenSSL.html
 mkdir certs
 openssl req -x509 -newkey rsa:4096 -nodes -keyout certs/server.key -out certs/server.crt -days 365 -subj "/C=MX/ST=Estado/L=Ciudad/O=ChatSeguro/OU=IT/CN=chat-server"
 ```
 
-### 2. Iniciar los Servicios
+### 2. Start the Services
 
 ```bash
 docker-compose up -d
 ```
 
-Esto iniciará:
-- **chat-server** en puerto `5000` (servidor de sockets)
-- **chat-client** en puerto `8550` (interfaz web Flet)
-- **ollama** en puerto `11434` (IA opcional)
+This will start:
+- **chat-server** on port `5000` (socket server)
+- **chat-client** on port `8550` (Flet web interface)
+- **ollama** on port `11434` (optional AI)
 
-### 3. Acceder al Chat
+### 3. Access the Chat
 
-Abre tu navegador en:
+Open your browser at:
 ```
 http://localhost:8550
 ```
 
-## 📦 Estructura de Servicios
+## 📦 Service Structure
 
-### Servidor de Chat (`chat-server`)
-- **Puerto:** 5000
-- **Protocolo:** Socket SSL/TLS
-- **Datos persistentes:** `./data/` (usuarios, historial, salas)
-- **Certificados:** `./certs/` (server.crt, server.key)
+### Chat Server (`chat-server`)
+- **Port:** 5000
+- **Protocol:** SSL/TLS Socket
+- **Persistent data:** `./data/` (users, history, rooms)
+- **Certificates:** `./certs/` (server.crt, server.key)
 
-### Cliente Flet (`chat-client`)
-- **Puerto:** 8550
-- **Interfaz:** Web (Material Design 3)
-- **Acceso:** http://localhost:8550
+### Flet Client (`chat-client`)
+- **Port:** 8550
+- **Interface:** Web (Material Design 3)
+- **Access:** http://localhost:8550
 
-### Ollama IA (`ollama`)
-- **Puerto:** 11434
-- **Modelo:** llama3.2:3b
-- **Comando IA:** `/resume` en el chat
+### Ollama AI (`ollama`)
+- **Port:** 11434
+- **Model:** llama3.2:3b
+- **AI command:** `/resume` in the chat
 
-## 🛠️ Comandos Útiles
+## 🛠️ Useful Commands
 
-### Ver logs en tiempo real
+### View logs in real time
 ```bash
 docker-compose logs -f
 ```
 
-### Ver logs de un servicio específico
+### View logs for a specific service
 ```bash
 docker-compose logs -f chat-server
 docker-compose logs -f chat-client
 docker-compose logs -f ollama
 ```
 
-### Reiniciar servicios
+### Restart services
 ```bash
 docker-compose restart
 ```
 
-### Detener servicios
+### Stop services
 ```bash
 docker-compose down
 ```
 
-### Detener y eliminar volúmenes (⚠️ borra datos)
+### Stop and remove volumes (⚠️ deletes data)
 ```bash
 docker-compose down -v
 ```
 
-### Reconstruir imágenes
+### Rebuild images
 ```bash
 docker-compose build --no-cache
 docker-compose up -d
 ```
 
-## 🔧 Configuración Avanzada
+## 🔧 Advanced Configuration
 
-### Cambiar Puertos
+### Change Ports
 
-Edita `docker-compose.yml`:
+Edit `docker-compose.yml`:
 
 ```yaml
 services:
   chat-server:
     ports:
-      - "5000:5000"  # Cambia el primer número (host)
+      - "5000:5000"  # Change the first number (host)
   
   chat-client:
     ports:
-      - "8550:8550"  # Cambia el primer número (host)
+      - "8550:8550"  # Change the first number (host)
 ```
 
-### Configurar IP del Servidor
+### Configure Server IP
 
-El servidor está configurado para escuchar en `192.168.1.100` por defecto. Para cambiar esto:
+The server is configured to listen on `192.168.1.100` by default. To change this:
 
-1. Edita `Host 0.0.3.py` línea 758:
+1. Edit `Host 0.0.3.py` line 758:
 ```python
-s.bind(("0.0.0.0", 5000))  # Escuchar en todas las interfaces
+s.bind(("0.0.0.0", 5000))  # Listen on all interfaces
 ```
 
-2. Reconstruye la imagen:
+2. Rebuild the image:
 ```bash
 docker-compose build chat-server
 docker-compose up -d
 ```
 
-### Desactivar Ollama (IA)
+### Disable Ollama (AI)
 
-Si no necesitas la funcionalidad de IA, comenta el servicio en `docker-compose.yml`:
+If you don't need the AI functionality, comment out the service in `docker-compose.yml`:
 
 ```yaml
 # ollama:
@@ -147,7 +147,7 @@ Si no necesitas la funcionalidad de IA, comenta el servicio en `docker-compose.y
 #   ...
 ```
 
-Y en el servicio `chat-server`, elimina la dependencia:
+And in the `chat-server` service, remove the dependency:
 
 ```yaml
 chat-server:
@@ -155,100 +155,100 @@ chat-server:
   #   - ollama
 ```
 
-### Configurar GPU para Ollama
+### Configure GPU for Ollama
 
-Si tienes GPU NVIDIA, asegúrate de tener instalado:
+If you have an NVIDIA GPU, make sure you have installed:
 - NVIDIA Docker Runtime
 - NVIDIA Container Toolkit
 
-El `docker-compose.yml` ya incluye la configuración GPU. Si no tienes GPU, comenta la sección `deploy` en el servicio `ollama`.
+The `docker-compose.yml` already includes GPU configuration. If you don't have a GPU, comment out the `deploy` section in the `ollama` service.
 
-## 🌐 Acceso desde Otros Dispositivos
+## 🌐 Access from Other Devices
 
-Para acceder desde otros dispositivos en tu red local:
+To access from other devices on your local network:
 
-1. Encuentra tu IP local:
+1. Find your local IP:
    - **Windows:** `ipconfig`
-   - **Linux/macOS:** `ifconfig` o `ip addr`
+   - **Linux/macOS:** `ifconfig` or `ip addr`
 
-2. Accede desde otro dispositivo:
+2. Access from another device:
    ```
-   http://TU_IP:8550
+   http://YOUR_IP:8550
    ```
 
-3. Configura el firewall para permitir los puertos 5000 y 8550.
+3. Configure the firewall to allow ports 5000 and 8550.
 
-## 📊 Monitoreo y Salud
+## 📊 Monitoring and Health
 
-### Verificar estado de servicios
+### Check service status
 ```bash
 docker-compose ps
 ```
 
-### Healthcheck del servidor
-El servidor incluye un healthcheck automático cada 30 segundos. Verifica el estado:
+### Server healthcheck
+The server includes an automatic healthcheck every 30 seconds. Check the status:
 ```bash
 docker inspect chat-server | grep -A 10 Health
 ```
 
-## 🔒 Seguridad
+## 🔒 Security
 
-### Certificados SSL
-- Los certificados autofirmados son válidos por 365 días
-- Para producción, usa certificados de una CA confiable (Let's Encrypt)
-- Los certificados se almacenan en `./certs/`
+### SSL Certificates
+- Self-signed certificates are valid for 365 days
+- For production, use certificates from a trusted CA (Let's Encrypt)
+- Certificates are stored in `./certs/`
 
-### Datos Persistentes
-- Usuarios: `./data/usuarios.json`
-- Historial: `./data/historial.json`
-- Salas: `./data/salas.json`
-- Pines: `./data/pines.json`
+### Persistent Data
+- Users: `./data/usuarios.json`
+- History: `./data/historial.json`
+- Rooms: `./data/salas.json`
+- Pins: `./data/pines.json`
 
 ### Backup
 ```bash
-# Backup de datos
+# Backup data
 tar -czf backup-$(date +%Y%m%d).tar.gz data/ certs/
 
-# Restaurar backup
+# Restore backup
 tar -xzf backup-YYYYMMDD.tar.gz
 ```
 
-## 🐛 Solución de Problemas
+## 🐛 Troubleshooting
 
-### El servidor no inicia
+### Server won't start
 ```bash
-# Verificar logs
+# Check logs
 docker-compose logs chat-server
 
-# Verificar certificados
+# Check certificates
 ls -la certs/
 
-# Regenerar certificados
+# Regenerate certificates
 ./generate_certs.sh
 ```
 
-### El cliente no se conecta
+### Client won't connect
 ```bash
-# Verificar que el servidor esté corriendo
+# Verify server is running
 docker-compose ps
 
-# Verificar conectividad
+# Check connectivity
 docker exec chat-client ping chat-server
 
-# Reiniciar servicios
+# Restart services
 docker-compose restart
 ```
 
-### Ollama no responde
+### Ollama not responding
 ```bash
-# Descargar modelo manualmente
+# Manually download the model
 docker exec -it chat-ollama ollama pull llama3.2:3b
 
-# Verificar modelos instalados
+# Check installed models
 docker exec -it chat-ollama ollama list
 ```
 
-### Puerto ya en uso
+### Port already in use
 ```bash
 # Windows
 netstat -ano | findstr :5000
@@ -259,49 +259,49 @@ lsof -i :5000
 kill -9 <PID>
 ```
 
-## 🔄 Actualización
+## 🔄 Update
 
-Para actualizar a una nueva versión:
+To update to a new version:
 
 ```bash
-# Detener servicios
+# Stop services
 docker-compose down
 
-# Actualizar código
+# Update code
 git pull
 
-# Reconstruir imágenes
+# Rebuild images
 docker-compose build --no-cache
 
-# Iniciar servicios
+# Start services
 docker-compose up -d
 ```
 
-## 📝 Variables de Entorno
+## 📝 Environment Variables
 
-Puedes crear un archivo `.env` para personalizar la configuración:
+You can create a `.env` file to customize configuration:
 
 ```env
-# Puertos
+# Ports
 CHAT_SERVER_PORT=5000
 CHAT_CLIENT_PORT=8550
 OLLAMA_PORT=11434
 
-# IA
+# AI
 OLLAMA_MODEL=llama3.2:3b
 
-# Red
+# Network
 SUBNET=172.20.0.0/16
 ```
 
-## 🎯 Producción
+## 🎯 Production
 
-Para despliegue en producción:
+For production deployment:
 
-1. **Usa certificados válidos** (Let's Encrypt)
-2. **Configura un proxy reverso** (Nginx/Traefik)
-3. **Habilita HTTPS** en el cliente
-4. **Configura límites de recursos**:
+1. **Use valid certificates** (Let's Encrypt)
+2. **Set up a reverse proxy** (Nginx/Traefik)
+3. **Enable HTTPS** on the client
+4. **Configure resource limits**:
 
 ```yaml
 services:
@@ -316,21 +316,19 @@ services:
           memory: 1G
 ```
 
-5. **Usa Docker Swarm o Kubernetes** para alta disponibilidad
+5. **Use Docker Swarm or Kubernetes** for high availability
 
-## 📚 Recursos Adicionales
+## 📚 Additional Resources
 
-- [Documentación de Docker](https://docs.docker.com/)
-- [Documentación de Flet](https://flet.dev/)
+- [Docker Documentation](https://docs.docker.com/)
+- [Flet Documentation](https://flet.dev/)
 - [Ollama Models](https://ollama.ai/library)
 
-## 🆘 Soporte
+## 🆘 Support
 
-Si encuentras problemas:
-1. Revisa los logs: `docker-compose logs`
-2. Verifica la documentación técnica: `Manual Técnico.pdf`
-3. Consulta el README principal: `README.md`
+If you find issues:
+1. Check the logs: `docker-compose logs`
+2. Review the technical documentation: `Manual Técnico.pdf`
+3. Consult the main README: `README.md`
 
 ---
-
-**Hecho con ❤️ por el equipo de Chat-Multihilo-DChat**
